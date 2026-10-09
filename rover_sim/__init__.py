@@ -7,9 +7,15 @@ from rover_sim.config import (
     CellType,
     DEFAULT_CELL_TYPE_COSTS,
     DEFAULT_CONFIG,
+    DEFAULT_ESTIMATED_TERRAIN_COSTS,
     DEFAULT_TERRAIN_COSTS,
     SimulationConfig,
     TerrainType,
+)
+from rover_sim.planner import (
+    PathResult,
+    RoverPlanner,
+    SafetyCheckResult,
 )
 from rover_sim.rover import (
     BeliefCell,
@@ -32,6 +38,7 @@ __all__ = [
     "CellType",
     "DEFAULT_CONFIG",
     "DEFAULT_TERRAIN_COSTS",
+    "DEFAULT_ESTIMATED_TERRAIN_COSTS",
     "DEFAULT_CELL_TYPE_COSTS",
     "GroundTruthMap",
     "World",
@@ -43,4 +50,7 @@ __all__ = [
     "BeliefCell",
     "CellVisibilityState",
     "DiscoveredDataSite",
+    "RoverPlanner",
+    "PathResult",
+    "SafetyCheckResult",
 ]

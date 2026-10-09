@@ -106,14 +106,20 @@ class TestRoverAndBeliefMap(unittest.TestCase):
         )
 
     def test_sensing_discovers_terrain_and_costs(self):
-        """Verify sensing correctly reveals terrain, movement costs, and obstacles."""
+        """Verify sensing correctly reveals terrain, obstacles, and uses estimated costs (not actual costs)."""
         # Check all cells sensed during initial scan around base
         for vx, vy in self.rover.current_visible_cells:
             believed_cell = self.rover.belief_map.get_cell(vx, vy)
             real_cell = self.world.get_cell(vx, vy)
 
             self.assertEqual(believed_cell.terrain, real_cell.terrain)
-            self.assertEqual(believed_cell.cost, real_cell.cost)
+            # Rover uses its estimated cost (actual cost is never revealed prior to movement)
+            expected_cost = (
+                1.0 if (real_cell.is_base or real_cell.is_comm_zone)
+                else (math.inf if real_cell.terrain == TerrainType.ROCK
+                else self.rover.get_estimated_cost(real_cell.terrain))
+            )
+            self.assertEqual(believed_cell.cost, expected_cost)
             self.assertEqual(believed_cell.is_obstacle, real_cell.terrain == TerrainType.ROCK)
             self.assertEqual(believed_cell.is_passable, real_cell.is_passable)
 

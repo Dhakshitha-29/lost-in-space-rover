@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from rover_sim.config import (
     CellType,
     DEFAULT_CONFIG,
+    DEFAULT_ESTIMATED_TERRAIN_COSTS,
     SimulationConfig,
     TerrainType,
 )
@@ -54,6 +55,7 @@ class BeliefCell:
     y: int
     terrain: Optional[TerrainType] = None
     cost: Optional[float] = None
+    experienced_cost: Optional[float] = None  # Actual cost experienced after stepping on cell
     is_base: bool = False
     is_comm_zone: bool = False
     data_site: Optional[DiscoveredDataSite] = None
@@ -342,12 +344,53 @@ class Rover:
         sensor_radius: int = 2,
         config: Optional[SimulationConfig] = None,
         world: Optional[GroundTruthMap] = None,
+        estimated_costs: Optional[Dict[TerrainType, float]] = None,
+        learning_rate: Optional[float] = None,
+        learning_method: Optional[str] = None,
+        safety_margin: Optional[float] = None,
     ) -> None:
         self.config = config or DEFAULT_CONFIG
         self.position = position
         self.sensor_radius = sensor_radius
         self.max_energy = energy if energy is not None else self.config.initial_energy
         self.energy = float(self.max_energy)
+
+        # Terrain learning and estimation (Phase 3)
+        if estimated_costs is not None:
+            self.estimated_costs = dict(estimated_costs)
+        elif self.config.estimated_terrain_costs is not None:
+            self.estimated_costs = dict(self.config.estimated_terrain_costs)
+        else:
+            self.estimated_costs = dict(DEFAULT_ESTIMATED_TERRAIN_COSTS)
+
+        self.learning_rate = (
+            learning_rate
+            if learning_rate is not None
+            else self.config.terrain_learning_rate
+        )
+        self.learning_method = (
+            learning_method
+            if learning_method is not None
+            else self.config.terrain_learning_method
+        )
+        self.safety_margin = (
+            safety_margin
+            if safety_margin is not None
+            else self.config.safety_margin
+        )
+
+        # Historical tracker for experienced costs per terrain
+        self.cost_history: Dict[TerrainType, List[float]] = {
+            t: [] for t in TerrainType
+        }
+        self.experienced_costs: Dict[Tuple[int, int], float] = {}
+
+        # Planner for A* and Dijkstra safe-return budgeting
+        from rover_sim.planner import RoverPlanner
+        self.planner = RoverPlanner(
+            safety_margin=self.safety_margin,
+            conservative_unknown=True,
+        )
 
         # Separate Belief Map
         width = self.config.grid_width
@@ -374,6 +417,7 @@ class Rover:
         energy: Optional[float] = None,
         sensor_radius: int = 2,
         config: Optional[SimulationConfig] = None,
+        estimated_costs: Optional[Dict[TerrainType, float]] = None,
     ) -> "Rover":
         """Factory method to initialize rover at the world's base position."""
         rover = cls(
@@ -382,8 +426,35 @@ class Rover:
             sensor_radius=sensor_radius,
             config=config or world.config,
             world=world,
+            estimated_costs=estimated_costs,
         )
         return rover
+
+    def get_estimated_cost(self, terrain: TerrainType) -> float:
+        """Return the rover's current estimated cost for a given terrain type."""
+        return self.estimated_costs.get(terrain, 1.0)
+
+    def learn_cost(self, terrain: TerrainType, actual_cost: float) -> float:
+        """Update estimated terrain cost using experienced physical cost.
+
+        Supports Exponential Moving Average (EMA) and Running Average.
+        """
+        if terrain == TerrainType.ROCK or math.isinf(actual_cost):
+            return math.inf
+
+        self.cost_history[terrain].append(actual_cost)
+
+        if self.learning_method == "ema":
+            old_estimate = self.estimated_costs.get(terrain, actual_cost)
+            alpha = self.learning_rate
+            new_estimate = (1.0 - alpha) * old_estimate + alpha * actual_cost
+            self.estimated_costs[terrain] = new_estimate
+        else:
+            # Running average
+            new_estimate = sum(self.cost_history[terrain]) / len(self.cost_history[terrain])
+            self.estimated_costs[terrain] = new_estimate
+
+        return self.estimated_costs[terrain]
 
     def get_visible_positions(self, width: int, height: int) -> List[Tuple[int, int]]:
         """Compute all coordinates within sensor radius using Manhattan distance.
@@ -409,7 +480,7 @@ class Rover:
 
         Reveals ONLY cells within Manhattan distance <= sensor_radius.
         Copies observed physical data into belief map.
-        Unseen cells outside sensor radius are never inspected or exposed.
+        Never reveals actual movement costs before movement: uses rover's estimated costs!
         """
         visible_coords = self.get_visible_positions(world.width, world.height)
         visible_set = set(visible_coords)
@@ -419,12 +490,22 @@ class Rover:
             cell = world.get_cell(x, y)
             data_site = cell.data_site
 
+            # Use estimated cost for unvisited terrain (actual cost is never revealed prior to movement)
+            if cell.terrain == TerrainType.ROCK:
+                cost_estimate = math.inf
+            elif cell.is_base or cell.is_comm_zone:
+                cost_estimate = 1.0
+            elif (x, y) in self.experienced_costs:
+                cost_estimate = self.experienced_costs[(x, y)]
+            else:
+                cost_estimate = self.get_estimated_cost(cell.terrain)
+
             # Write observation into Belief Map
             self.belief_map.update_cell_observation(
                 x=x,
                 y=y,
                 terrain=cell.terrain,
-                cost=cell.cost,
+                cost=cost_estimate,
                 is_base=cell.is_base,
                 is_comm_zone=cell.is_comm_zone,
                 data_site=data_site,
@@ -438,8 +519,8 @@ class Rover:
         """Attempt to move rover to an adjacent cell (tx, ty).
 
         Validates adjacency, checks physical passability in world,
-        deducts energy cost, updates position, marks cell as visited,
-        and triggers automatic sensing.
+        deducts energy cost, learns experienced terrain cost, updates position,
+        marks cell as visited, and triggers automatic sensing.
         """
         tx, ty = target_pos
         rx, ry = self.position
@@ -469,12 +550,85 @@ class Rover:
         self.step_count += 1
         self.path_history.append(target_pos)
 
+        # Experience and learn the actual terrain cost
+        actual_terrain = world.get_cell(tx, ty).terrain
+        self.learn_cost(actual_terrain, move_cost)
+        self.experienced_costs[target_pos] = move_cost
+
         # Update belief
         self.belief_map.mark_visited(tx, ty)
+        visited_cell = self.belief_map.get_cell(tx, ty)
+        visited_cell.cost = move_cost
+        visited_cell.experienced_cost = move_cost
 
-        # Sense surroundings at new location
+        # Sense surroundings at new location with updated estimates
         self.sense(world)
         return True
+
+    def check_move_safety(
+        self,
+        target_pos: Tuple[int, int],
+        safety_margin: Optional[float] = None,
+    ):
+        """Check Point-of-No-Return safety before moving to target_pos."""
+        return self.planner.check_move_safety(
+            rover=self,
+            target_pos=target_pos,
+            safety_margin=safety_margin,
+        )
+
+    def safe_move(
+        self,
+        target_pos: Tuple[int, int],
+        world: GroundTruthMap,
+        safety_margin: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Move to target_pos only if safety check passes (energy + return home + 12% margin)."""
+        safety = self.check_move_safety(target_pos, safety_margin)
+        if not safety.is_safe:
+            return False, safety.reason
+
+        success = self.move(target_pos, world)
+        if not success:
+            return False, "Move failed due to physical obstacle or energy depletion."
+        return True, "Move executed safely."
+
+    def get_return_costs(self) -> Dict[Tuple[int, int], float]:
+        """Compute Dijkstra return energy costs from every known cell to base."""
+        base_pos = self.belief_map.base_pos or self.position
+        costs, _ = self.planner.dijkstra_return_costs(
+            self.belief_map, base_pos, self.estimated_costs
+        )
+        return costs
+
+    def get_cost_home(self, pos: Optional[Tuple[int, int]] = None) -> float:
+        """Get the estimated return cost home from given pos (or current position)."""
+        check_pos = pos or self.position
+        return_table = self.get_return_costs()
+        return return_table.get(check_pos, math.inf)
+
+    def get_return_path_home(
+        self, pos: Optional[Tuple[int, int]] = None
+    ) -> Optional[List[Tuple[int, int]]]:
+        """Get the step-by-step path to return to base from given pos (or current position)."""
+        check_pos = pos or self.position
+        base_pos = self.belief_map.base_pos or self.position
+        _, next_hop = self.planner.dijkstra_return_costs(
+            self.belief_map, base_pos, self.estimated_costs
+        )
+        return self.planner.get_return_path(next_hop, check_pos, base_pos)
+
+    def plan_path_to(
+        self, goal: Tuple[int, int], allow_unknown: bool = False
+    ):
+        """Find an energy-optimal A* path from current position to goal on Belief Map."""
+        return self.planner.a_star(
+            self.belief_map,
+            self.position,
+            goal,
+            self.estimated_costs,
+            allow_unknown=allow_unknown,
+        )
 
     def scan(self, world: GroundTruthMap, cost: Optional[float] = None) -> bool:
         """Perform an in-place sensor scan without moving.

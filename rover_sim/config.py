@@ -38,6 +38,15 @@ DEFAULT_TERRAIN_COSTS: Dict[TerrainType, float] = {
     TerrainType.ROCK: math.inf,
 }
 
+# Configurable initial terrain cost estimates for the rover (differ from actual costs)
+# Section 7 & Phase 3: Rover begins with prior estimates and learns actual costs through movement
+DEFAULT_ESTIMATED_TERRAIN_COSTS: Dict[TerrainType, float] = {
+    TerrainType.FLAT: 1.5,   # Actual world cost is 1.0
+    TerrainType.ROUGH: 4.0,  # Actual world cost is 3.0
+    TerrainType.HILL: 6.5,   # Actual world cost is 5.0
+    TerrainType.ROCK: math.inf,
+}
+
 DEFAULT_CELL_TYPE_COSTS: Dict[CellType, float] = {
     CellType.FLAT: 1.0,
     CellType.ROUGH: 3.0,
@@ -80,25 +89,40 @@ class SimulationConfig:
     # Connectivity / Movement
     allow_diagonal: bool = False
 
-    # Energy and Rover defaults (for future phases)
+    # Energy and Rover defaults
     initial_energy: float = 300.0
     sensor_radius: int = 2
-    safety_margin: float = 0.15  # 15% safety margin for point of no return
+    safety_margin: float = 0.12  # Configurable 12% safety margin for safe return
     scan_cost: float = 1.0
+
+    # Terrain cost learning (Phase 3)
+    terrain_learning_rate: float = 0.3
+    terrain_learning_method: str = "ema"  # "ema" or "running_avg"
 
     # Dynamic obstacle settings (for Phase 5)
     dynamic_obstacles_enabled: bool = False
     obstacle_event_interval: int = 20
     obstacle_event_count: int = 2
 
-    # Custom costs override (optional)
+    # Actual Ground Truth terrain costs
     terrain_costs: Dict[TerrainType, float] = field(
         default_factory=lambda: dict(DEFAULT_TERRAIN_COSTS)
     )
 
+    # Initial estimated terrain costs for the rover (differs from actual costs)
+    estimated_terrain_costs: Dict[TerrainType, float] = field(
+        default_factory=lambda: dict(DEFAULT_ESTIMATED_TERRAIN_COSTS)
+    )
+
     def get_terrain_cost(self, terrain: TerrainType) -> float:
-        """Return the energy cost associated with traversing a terrain type."""
+        """Return the actual physical energy cost of a terrain type."""
         return self.terrain_costs.get(terrain, DEFAULT_TERRAIN_COSTS[terrain])
+
+    def get_estimated_terrain_cost(self, terrain: TerrainType) -> float:
+        """Return the initial estimated energy cost of a terrain type for the rover."""
+        return self.estimated_terrain_costs.get(
+            terrain, DEFAULT_ESTIMATED_TERRAIN_COSTS[terrain]
+        )
 
 
 # Default configuration instance

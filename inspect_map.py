@@ -189,8 +189,12 @@ def main() -> None:
         print(f"  * Position: {status['position']}")
         print(f"  * Energy: {status['energy']} / {status['max_energy']} ({status['energy_pct']})")
         print(f"  * Sensor Radius: {status['sensor_radius']} (Manhattan distance)")
+        print(f"  * Safety Margin: {rover.safety_margin * 100:.0f}% (Buffer: {rover.safety_margin * rover.max_energy:.1f} energy units)")
         print(f"  * Known Cells: {status['known_count']} / {config.grid_width * config.grid_height}")
         print(f"  * Frontier Cells: {status['frontier_count']}")
+        print("  * Current Terrain Cost Estimates:")
+        for t in [TerrainType.FLAT, TerrainType.ROUGH, TerrainType.HILL]:
+            print(f"      - {t.value.capitalize()}: {rover.get_estimated_cost(t):.2f}")
 
     if args.save_image:
         render_image(world, args.save_image)
