@@ -62,6 +62,11 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Skip printing the ASCII grid and print only summary statistics",
     )
+    parser.add_argument(
+        "--rover",
+        action="store_true",
+        help="Display the Rover's initial Belief Map and sensing status at Base",
+    )
     return parser.parse_args()
 
 
@@ -171,6 +176,21 @@ def main() -> None:
         print("\n" + world.render_ascii())
 
     world.print_summary()
+
+    if args.rover:
+        from rover_sim.rover import Rover
+        rover = Rover.create_at_base(world, config=config)
+        print("\n" + "=" * 60)
+        print("[+] ROVER INITIAL BELIEF MAP (After Landing at Base)")
+        print("=" * 60)
+        print(rover.render_ascii_belief())
+        status = rover.status()
+        print("\nRover Status:")
+        print(f"  * Position: {status['position']}")
+        print(f"  * Energy: {status['energy']} / {status['max_energy']} ({status['energy_pct']})")
+        print(f"  * Sensor Radius: {status['sensor_radius']} (Manhattan distance)")
+        print(f"  * Known Cells: {status['known_count']} / {config.grid_width * config.grid_height}")
+        print(f"  * Frontier Cells: {status['frontier_count']}")
 
     if args.save_image:
         render_image(world, args.save_image)

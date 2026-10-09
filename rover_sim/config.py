@@ -82,7 +82,7 @@ class SimulationConfig:
 
     # Energy and Rover defaults (for future phases)
     initial_energy: float = 300.0
-    sensor_radius: int = 3
+    sensor_radius: int = 2
     safety_margin: float = 0.15  # 15% safety margin for point of no return
     scan_cost: float = 1.0
 

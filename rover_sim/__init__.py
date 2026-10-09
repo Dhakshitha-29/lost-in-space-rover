@@ -11,6 +11,13 @@ from rover_sim.config import (
     SimulationConfig,
     TerrainType,
 )
+from rover_sim.rover import (
+    BeliefCell,
+    BeliefMap,
+    CellVisibilityState,
+    DiscoveredDataSite,
+    Rover,
+)
 from rover_sim.world import (
     Cell,
     DataSite,
@@ -31,4 +38,9 @@ __all__ = [
     "WorldGenerator",
     "Cell",
     "DataSite",
+    "Rover",
+    "BeliefMap",
+    "BeliefCell",
+    "CellVisibilityState",
+    "DiscoveredDataSite",
 ]
