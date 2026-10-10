@@ -385,11 +385,13 @@ class Rover:
         }
         self.experienced_costs: Dict[Tuple[int, int], float] = {}
 
-        # Planner for A* and Dijkstra safe-return budgeting
+        # Planner for A* and Dijkstra safe-return budgeting and goal selection
         from rover_sim.planner import RoverPlanner
         self.planner = RoverPlanner(
             safety_margin=self.safety_margin,
             conservative_unknown=True,
+            explore_info_weight=getattr(self.config, "explore_info_weight", 8.0),
+            upload_urgency_factor=getattr(self.config, "upload_urgency_factor", 1.5),
         )
 
         # Separate Belief Map
@@ -397,9 +399,12 @@ class Rover:
         height = self.config.grid_height
         self.belief_map = BeliefMap(width=width, height=height, base_pos=position)
 
-        # Internal scientific data buffers
+        # Internal scientific data buffers and tracking (Phase 4)
         self.data_buffer: List[DiscoveredDataSite] = []
         self.secured_data: List[DiscoveredDataSite] = []
+        self._collected_data: List[DiscoveredDataSite] = []
+        self.lost_data: List[DiscoveredDataSite] = []
+        self.is_stranded: bool = False
 
         # History and step tracking
         self.step_count: int = 0
@@ -542,6 +547,8 @@ class Rover:
         # Energy check
         if self.energy < move_cost:
             # Insufficient energy to execute move
+            if not self.is_at_base and self.energy < 1.0:
+                self.mark_stranded()
             return False
 
         # Execute physical movement
@@ -563,6 +570,11 @@ class Rover:
 
         # Sense surroundings at new location with updated estimates
         self.sense(world)
+
+        # Check if rover became stranded after moving away from base
+        if not self.is_at_base and self.energy < 1.0:
+            self.mark_stranded()
+
         return True
 
     def check_move_safety(
@@ -646,7 +658,7 @@ class Rover:
     def collect_data(self, world: Optional[GroundTruthMap] = None) -> Optional[DiscoveredDataSite]:
         """Collect scientific data at the rover's current position.
 
-        Moves data into the rover's un-uploaded buffer.
+        Moves data into the rover's un-uploaded buffer and registers it in collected_data.
         """
         cx, cy = self.position
         cell = self.belief_map.get_cell(cx, cy)
@@ -655,6 +667,8 @@ class Rover:
             site = cell.data_site
             site.is_collected = True
             self.data_buffer.append(site)
+            if site not in self._collected_data:
+                self._collected_data.append(site)
 
             # Also reflect collection status in ground truth if world reference passed
             if world is not None and world.in_bounds(cx, cy):
@@ -666,8 +680,8 @@ class Rover:
 
         return None
 
-    def upload_data(self) -> int:
-        """Upload all buffered data at a communication zone or base.
+    def upload_data(self, force: bool = False) -> int:
+        """Upload all buffered data at a communication zone.
 
         Banks buffered data into secured data.
         Returns the number of data packages secured.
@@ -675,13 +689,48 @@ class Rover:
         cx, cy = self.position
         cell = self.belief_map.get_cell(cx, cy)
 
-        if cell.is_comm_zone or cell.is_base:
+        # Requirement: Collected data must remain unsecured until uploaded at a communication zone.
+        allow_base = getattr(self.config, "allow_base_upload", False) or force
+        can_upload = cell.is_comm_zone or (allow_base and cell.is_base)
+
+        if can_upload:
             uploaded_count = len(self.data_buffer)
             self.secured_data.extend(self.data_buffer)
             self.data_buffer.clear()
             return uploaded_count
 
         return 0
+
+    def mark_stranded(self) -> None:
+        """Mark the rover as stranded.
+
+        Any unuploaded data in data_buffer is lost.
+        """
+        self.is_stranded = True
+        if self.data_buffer:
+            self.lost_data.extend(self.data_buffer)
+            self.data_buffer.clear()
+
+    def check_stranded(self) -> bool:
+        """Evaluate if the rover has become stranded."""
+        if self.is_stranded:
+            return True
+        if not self.is_at_base and self.energy < 1.0:
+            self.mark_stranded()
+            return True
+        return False
+
+    def choose_goal(self):
+        """Use planner to evaluate and choose optimal mission goal."""
+        return self.planner.choose_goal(self)
+
+    def evaluate_goals(self):
+        """Use planner to evaluate and score all candidate goals."""
+        return self.planner.evaluate_goals(self)
+
+    def step_mission(self, world: GroundTruthMap):
+        """Execute a single step of the mission decision loop using planner."""
+        return self.planner.step_mission(self, world)
 
     # Visibility / Lifecycle queries
     def is_unknown(self, x: int, y: int) -> bool:
@@ -741,15 +790,77 @@ class Rover:
         cell = self.belief_map.get_cell(self.position[0], self.position[1])
         return cell.data_site is not None and not cell.data_site.is_collected
 
+    # Phase 4 separate data tracking properties
     @property
-    def buffer_value(self) -> int:
-        """Sum of scientific value in the unsecured data buffer."""
+    def unuploaded_data(self) -> List[DiscoveredDataSite]:
+        """Collected data currently in buffer awaiting upload at a communication zone."""
+        return self.data_buffer
+
+    @property
+    def uploaded_data(self) -> List[DiscoveredDataSite]:
+        """Data that has been successfully uploaded at a communication zone."""
+        return self.secured_data
+
+    @property
+    def collected_data(self) -> List[DiscoveredDataSite]:
+        """All scientific data collected during the mission."""
+        items = list(self._collected_data)
+        seen_ids = {d.id for d in items}
+        for d in self.data_buffer + self.secured_data + self.lost_data:
+            if d.id not in seen_ids:
+                items.append(d)
+                seen_ids.add(d.id)
+        return items
+
+    @property
+    def unuploaded_value(self) -> int:
+        """Scientific value of collected but unuploaded data."""
         return sum(ds.value for ds in self.data_buffer)
 
     @property
-    def secured_value(self) -> int:
-        """Sum of scientific value secured through upload."""
+    def unuploaded_count(self) -> int:
+        """Count of collected but unuploaded data packages."""
+        return len(self.data_buffer)
+
+    @property
+    def uploaded_value(self) -> int:
+        """Scientific value of uploaded and secured data."""
         return sum(ds.value for ds in self.secured_data)
+
+    @property
+    def uploaded_count(self) -> int:
+        """Count of uploaded and secured data packages."""
+        return len(self.secured_data)
+
+    @property
+    def collected_value(self) -> int:
+        """Total scientific value of all collected data."""
+        return sum(ds.value for ds in self.collected_data)
+
+    @property
+    def collected_count(self) -> int:
+        """Total count of all collected data packages."""
+        return len(self.collected_data)
+
+    @property
+    def lost_value(self) -> int:
+        """Scientific value of data lost due to stranded state."""
+        return sum(ds.value for ds in self.lost_data)
+
+    @property
+    def lost_count(self) -> int:
+        """Count of data packages lost due to stranded state."""
+        return len(self.lost_data)
+
+    @property
+    def buffer_value(self) -> int:
+        """Sum of scientific value in the unsecured data buffer (backwards compatibility)."""
+        return self.unuploaded_value
+
+    @property
+    def secured_value(self) -> int:
+        """Sum of scientific value secured through upload (backwards compatibility)."""
+        return self.uploaded_value
 
     def status(self) -> Dict[str, Any]:
         """Return detailed rover status dictionary."""
@@ -762,8 +873,17 @@ class Rover:
             "step_count": self.step_count,
             "buffer_count": len(self.data_buffer),
             "buffer_value": self.buffer_value,
+            "unuploaded_count": self.unuploaded_count,
+            "unuploaded_value": self.unuploaded_value,
             "secured_count": len(self.secured_data),
             "secured_value": self.secured_value,
+            "uploaded_count": self.uploaded_count,
+            "uploaded_value": self.uploaded_value,
+            "collected_count": self.collected_count,
+            "collected_value": self.collected_value,
+            "lost_count": self.lost_count,
+            "lost_value": self.lost_value,
+            "is_stranded": self.is_stranded,
             "is_at_base": self.is_at_base,
             "is_at_comm_zone": self.is_at_comm_zone,
             "visited_count": len(self.visited_cells),

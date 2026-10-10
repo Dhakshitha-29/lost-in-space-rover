@@ -1,17 +1,66 @@
-"""Pathfinding and Safe Return Planning module (Phase 3).
+"""Pathfinding, Safe Return Planning, and Mission Goal Decisions (Phase 4).
 
-Implements A* search for energy-optimal routes and Dijkstra for safe-return budgeting.
-Uses four-directional movement only.
-Conservative by default: unknown cells are treated as impassable for safety.
+Implements A* search for energy-optimal routes, Dijkstra for safe-return budgeting,
+and utility-based goal selection for frontier exploration, resource collection,
+communication zone uploads, and safe return to base.
 """
 
 from dataclasses import dataclass
+from enum import Enum
 import heapq
 import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from rover_sim.config import CellType, TerrainType
-from rover_sim.rover import BeliefCell, BeliefMap, Rover
+from rover_sim.rover import BeliefCell, BeliefMap, DiscoveredDataSite, Rover
+
+
+class GoalType(str, Enum):
+    """Types of mission goals for the autonomous rover."""
+    EXPLORE = "explore"      # Discover unknown cells at the frontier
+    COLLECT = "collect"      # Collect scientific data at a discovered data site
+    UPLOAD = "upload"        # Secure unuploaded data at a communication zone
+    RETURN = "return"        # Return safely to base before energy depletion
+
+
+@dataclass
+class Goal:
+    """A prioritized mission objective evaluated by utility scoring."""
+    goal_type: GoalType
+    target_pos: Tuple[int, int]
+    utility_score: float
+    expected_reward: float
+    estimated_energy_cost: float
+    reason: str
+    target_info: Optional[Any] = None
+    path: Optional[List[Tuple[int, int]]] = None
+
+    @property
+    def score(self) -> float:
+        """Alias for utility_score."""
+        return self.utility_score
+
+    @property
+    def cost(self) -> float:
+        """Alias for estimated_energy_cost."""
+        return self.estimated_energy_cost
+
+    @property
+    def reward(self) -> float:
+        """Alias for expected_reward."""
+        return self.expected_reward
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert goal to dictionary representation."""
+        return {
+            "goal_type": self.goal_type.value,
+            "target_pos": self.target_pos,
+            "utility_score": self.utility_score,
+            "expected_reward": self.expected_reward,
+            "estimated_energy_cost": self.estimated_energy_cost,
+            "reason": self.reason,
+            "path_length": len(self.path) if self.path else 0,
+        }
 
 
 @dataclass
@@ -50,15 +99,19 @@ class SafetyCheckResult:
 
 
 class RoverPlanner:
-    """Autonomous planner managing energy-optimal routing and safety guarantees."""
+    """Autonomous planner managing energy-optimal routing, safety guarantees, and mission decisions."""
 
     def __init__(
         self,
         safety_margin: float = 0.12,
         conservative_unknown: bool = True,
+        explore_info_weight: float = 8.0,
+        upload_urgency_factor: float = 1.5,
     ) -> None:
         self.safety_margin = safety_margin
         self.conservative_unknown = conservative_unknown
+        self.explore_info_weight = explore_info_weight
+        self.upload_urgency_factor = upload_urgency_factor
 
     @staticmethod
     def get_cell_estimated_cost(
@@ -347,3 +400,482 @@ class RoverPlanner:
             can_return=True,
             reason=reason,
         )
+
+    # -------------------------------------------------------------------------
+    # Phase 4: Utility-Based Goal Selection and Mission Decisions
+    # -------------------------------------------------------------------------
+
+    def score_explore_goal(
+        self,
+        rover: Rover,
+        frontier_pos: Tuple[int, int],
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> Optional[Goal]:
+        """Score an exploration goal for a frontier cell using information gain and travel cost."""
+        path_res = self.a_star(
+            rover.belief_map,
+            rover.position,
+            frontier_pos,
+            rover.estimated_costs,
+            allow_unknown=False,
+        )
+        if path_res is None:
+            return None
+
+        cost_to_f = path_res.total_estimated_cost
+        cost_home_from_f = return_distances.get(frontier_pos, math.inf)
+        if math.isinf(cost_home_from_f):
+            return None
+
+        safety_buffer = self.safety_margin * rover.max_energy
+        total_required = cost_to_f + cost_home_from_f + safety_buffer
+        if rover.energy < total_required:
+            return None
+
+        # Mission safety rule: if carrying unuploaded data, continued exploration is unsafe
+        # if the rover cannot safely reach a communication zone and return home after exploring.
+        if rover.unuploaded_value > 0 and rover.belief_map.known_comm_zones:
+            can_upload_after = False
+            for cz in rover.belief_map.known_comm_zones:
+                est_f_to_cz = float(abs(frontier_pos[0] - cz[0]) + abs(frontier_pos[1] - cz[1]))
+                cost_home_cz = return_distances.get(cz, 0.0)
+                if rover.energy >= cost_to_f + est_f_to_cz + cost_home_cz + safety_buffer:
+                    can_upload_after = True
+                    break
+            if not can_upload_after:
+                return None
+
+        # Safety margin check from current position
+        cost_home_current = return_distances.get(rover.position, 0.0)
+        current_margin = rover.energy - (cost_home_current + safety_buffer)
+        if current_margin <= 1.0:
+            return None
+
+        # Expected Information Gain: count of adjacent unknown cells
+        fx, fy = frontier_pos
+        cardinal_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        unknown_neighbors = sum(
+            1
+            for dx, dy in cardinal_dirs
+            if rover.belief_map.in_bounds(fx + dx, fy + dy)
+            and rover.belief_map.is_unknown(fx + dx, fy + dy)
+        )
+        if unknown_neighbors == 0:
+            return None
+
+        # Risk discount when carrying unuploaded data (protect unsecure buffer)
+        if rover.unuploaded_value > 0:
+            risk_discount = max(0.1, 1.0 - (rover.unuploaded_value / (rover.unuploaded_value + 30.0)))
+        else:
+            risk_discount = 1.0
+
+        energy_factor = max(0.2, rover.energy / rover.max_energy)
+        expected_reward = float(unknown_neighbors) * self.explore_info_weight * risk_discount * energy_factor
+        effective_cost = max(cost_to_f, 1.0)
+        utility_score = expected_reward / effective_cost
+
+        return Goal(
+            goal_type=GoalType.EXPLORE,
+            target_pos=frontier_pos,
+            utility_score=utility_score,
+            expected_reward=expected_reward,
+            estimated_energy_cost=cost_to_f,
+            reason=f"Explore frontier at {frontier_pos} (info gain: {unknown_neighbors} cells, cost: {cost_to_f:.1f})",
+            target_info={"unknown_neighbors": unknown_neighbors},
+            path=path_res.path,
+        )
+
+    def score_collect_goal(
+        self,
+        rover: Rover,
+        site: DiscoveredDataSite,
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> Optional[Goal]:
+        """Score a collection goal for a discovered uncollected data site."""
+        if site.is_collected:
+            return None
+
+        site_pos = site.pos
+        if rover.position == site_pos:
+            reward = float(site.value)
+            utility = reward * 500.0  # Immediate collection is highest local priority
+            return Goal(
+                goal_type=GoalType.COLLECT,
+                target_pos=site_pos,
+                utility_score=utility,
+                expected_reward=reward,
+                estimated_energy_cost=0.0,
+                reason=f"Collect data site {site.name} (value: {site.value}) at current position",
+                target_info=site,
+                path=[rover.position],
+            )
+
+        path_res = self.a_star(
+            rover.belief_map,
+            rover.position,
+            site_pos,
+            rover.estimated_costs,
+            allow_unknown=False,
+        )
+        if path_res is None:
+            return None
+
+        cost_to_site = path_res.total_estimated_cost
+        cost_home_from_site = return_distances.get(site_pos, math.inf)
+        if math.isinf(cost_home_from_site):
+            return None
+
+        safety_buffer = self.safety_margin * rover.max_energy
+        total_required = cost_to_site + cost_home_from_site + safety_buffer
+        if rover.energy < total_required:
+            return None
+
+        # Check upload feasibility after collection
+        upload_discount = 1.0
+        if rover.belief_map.known_comm_zones:
+            can_upload_after = False
+            for cz in rover.belief_map.known_comm_zones:
+                est_site_to_cz = float(abs(site_pos[0] - cz[0]) + abs(site_pos[1] - cz[1]))
+                cost_home_cz = return_distances.get(cz, 0.0)
+                if rover.energy >= cost_to_site + est_site_to_cz + cost_home_cz + safety_buffer:
+                    can_upload_after = True
+                    break
+            if not can_upload_after:
+                upload_discount = 0.25
+
+        buffer_discount = 1.0 / (1.0 + 0.015 * rover.unuploaded_value)
+        expected_reward = float(site.value) * upload_discount * buffer_discount
+        effective_cost = max(cost_to_site, 1.0)
+        utility_score = expected_reward / effective_cost
+
+        return Goal(
+            goal_type=GoalType.COLLECT,
+            target_pos=site_pos,
+            utility_score=utility_score,
+            expected_reward=expected_reward,
+            estimated_energy_cost=cost_to_site,
+            reason=f"Collect data site {site.name} (value: {site.value}, cost: {cost_to_site:.1f})",
+            target_info=site,
+            path=path_res.path,
+        )
+
+    def score_upload_goal(
+        self,
+        rover: Rover,
+        comm_pos: Tuple[int, int],
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> Optional[Goal]:
+        """Score an upload goal for a known communication zone."""
+        if rover.unuploaded_value == 0:
+            return None
+
+        if rover.position == comm_pos:
+            reward = float(rover.unuploaded_value)
+            utility = reward * 1000.0  # Immediate upload is top local priority
+            return Goal(
+                goal_type=GoalType.UPLOAD,
+                target_pos=comm_pos,
+                utility_score=utility,
+                expected_reward=reward,
+                estimated_energy_cost=0.0,
+                reason=f"Upload {rover.unuploaded_count} unsecured data packages ({rover.unuploaded_value} value) at comm zone",
+                target_info={"comm_pos": comm_pos},
+                path=[rover.position],
+            )
+
+        path_res = self.a_star(
+            rover.belief_map,
+            rover.position,
+            comm_pos,
+            rover.estimated_costs,
+            allow_unknown=False,
+        )
+        if path_res is None:
+            return None
+
+        cost_to_cz = path_res.total_estimated_cost
+        cost_home_from_cz = return_distances.get(comm_pos, math.inf)
+        if math.isinf(cost_home_from_cz):
+            return None
+
+        safety_buffer = self.safety_margin * rover.max_energy
+        total_required = cost_to_cz + cost_home_from_cz + safety_buffer
+        if rover.energy < total_required:
+            return None
+
+        # Upload urgency calculation:
+        # Multiplier increases as buffer value grows, energy depletes, and safety margin tightens.
+        val_factor = 1.0 + (rover.unuploaded_value / 40.0)
+        energy_spent_ratio = max(0.0, (rover.max_energy - rover.energy) / rover.max_energy)
+        depletion_factor = 1.0 + self.upload_urgency_factor * energy_spent_ratio
+
+        energy_margin = rover.energy - total_required
+        if energy_margin <= 30.0:
+            margin_boost = 1.0 + (30.0 - energy_margin) / 6.0
+        else:
+            margin_boost = 1.0
+
+        urgency = val_factor * depletion_factor * margin_boost
+        expected_reward = float(rover.unuploaded_value) * urgency
+        effective_cost = max(cost_to_cz, 1.0)
+        utility_score = expected_reward / effective_cost
+
+        return Goal(
+            goal_type=GoalType.UPLOAD,
+            target_pos=comm_pos,
+            utility_score=utility_score,
+            expected_reward=expected_reward,
+            estimated_energy_cost=cost_to_cz,
+            reason=f"Upload {rover.unuploaded_value} unsecured data at comm zone {comm_pos} (urgency: {urgency:.2f}, cost: {cost_to_cz:.1f})",
+            target_info={"comm_pos": comm_pos},
+            path=path_res.path,
+        )
+
+    def score_return_goal(
+        self,
+        rover: Rover,
+        return_distances: Dict[Tuple[int, int], float],
+        return_path: Optional[List[Tuple[int, int]]] = None,
+        emergency: bool = False,
+    ) -> Goal:
+        """Score a return goal to base."""
+        base_pos = rover.belief_map.base_pos or rover.position
+        cost_home = return_distances.get(rover.position, math.inf)
+        safety_buffer = self.safety_margin * rover.max_energy
+
+        if rover.is_at_base:
+            return Goal(
+                goal_type=GoalType.RETURN,
+                target_pos=base_pos,
+                utility_score=0.0,
+                expected_reward=0.0,
+                estimated_energy_cost=0.0,
+                reason="Rover is currently at base.",
+                path=[base_pos],
+            )
+
+        if emergency or (rover.energy <= cost_home + safety_buffer + 1.0):
+            return Goal(
+                goal_type=GoalType.RETURN,
+                target_pos=base_pos,
+                utility_score=1e7,  # Top absolute priority
+                expected_reward=1e5,
+                estimated_energy_cost=cost_home,
+                reason=(
+                    f"EMERGENCY RETURN: Point of No Return triggered! Energy {rover.energy:.1f} <= "
+                    f"return cost {cost_home:.1f} + safety buffer {safety_buffer:.1f}."
+                ),
+                path=return_path,
+            )
+
+        survival_reward = 30.0
+        effective_cost = max(cost_home, 1.0)
+        utility_score = survival_reward / effective_cost
+
+        return Goal(
+            goal_type=GoalType.RETURN,
+            target_pos=base_pos,
+            utility_score=utility_score,
+            expected_reward=survival_reward,
+            estimated_energy_cost=cost_home,
+            reason=f"Return safely to base (cost: {cost_home:.1f})",
+            path=return_path,
+        )
+
+    def evaluate_frontier_goals(
+        self,
+        rover: Rover,
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> List[Goal]:
+        """Evaluate and score all available frontier exploration goals."""
+        goals: List[Goal] = []
+        for f in rover.frontier:
+            goal = self.score_explore_goal(rover, f, return_distances)
+            if goal is not None:
+                goals.append(goal)
+        return goals
+
+    def evaluate_data_site_goals(
+        self,
+        rover: Rover,
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> List[Goal]:
+        """Evaluate and score all discovered uncollected data site goals."""
+        goals: List[Goal] = []
+        for site in rover.belief_map.known_data_sites.values():
+            if not site.is_collected:
+                goal = self.score_collect_goal(rover, site, return_distances)
+                if goal is not None:
+                    goals.append(goal)
+        return goals
+
+    def evaluate_upload_goals(
+        self,
+        rover: Rover,
+        return_distances: Dict[Tuple[int, int], float],
+    ) -> List[Goal]:
+        """Evaluate and score all known communication zone upload goals."""
+        if rover.unuploaded_value == 0:
+            return []
+        goals: List[Goal] = []
+        for cz in rover.belief_map.known_comm_zones:
+            goal = self.score_upload_goal(rover, cz, return_distances)
+            if goal is not None:
+                goals.append(goal)
+        return goals
+
+    def evaluate_goals(self, rover: Rover) -> List[Goal]:
+        """Score and return all candidate goals, sorted in descending order of utility."""
+        base_pos = rover.belief_map.base_pos or rover.position
+        return_distances, next_hop = self.dijkstra_return_costs(
+            rover.belief_map, base_pos, rover.estimated_costs
+        )
+        return_path = self.get_return_path(next_hop, rover.position, base_pos)
+
+        goals: List[Goal] = []
+        goals.extend(self.evaluate_upload_goals(rover, return_distances))
+        goals.extend(self.evaluate_data_site_goals(rover, return_distances))
+        goals.extend(self.evaluate_frontier_goals(rover, return_distances))
+        goals.append(self.score_return_goal(rover, return_distances, return_path))
+
+        goals.sort(key=lambda g: g.utility_score, reverse=True)
+        return goals
+
+    def choose_goal(self, rover: Rover) -> Goal:
+        """Select the highest-utility mission goal for the rover.
+
+        Considers:
+        - Frontier exploration
+        - Nearby data sites
+        - Communication zones for unsecured data
+        - Remaining energy and point-of-no-return safety
+        """
+        if rover.check_stranded():
+            return Goal(
+                goal_type=GoalType.RETURN,
+                target_pos=rover.position,
+                utility_score=0.0,
+                expected_reward=0.0,
+                estimated_energy_cost=0.0,
+                reason="Rover is stranded; no goals possible.",
+                path=[rover.position],
+            )
+
+        base_pos = rover.belief_map.base_pos or rover.position
+        return_distances, next_hop = self.dijkstra_return_costs(
+            rover.belief_map, base_pos, rover.estimated_costs
+        )
+        return_path = self.get_return_path(next_hop, rover.position, base_pos)
+
+        # 1. Point of No Return safety check:
+        cost_home = return_distances.get(rover.position, math.inf)
+        safety_buffer = self.safety_margin * rover.max_energy
+
+        if not rover.is_at_base and (rover.energy <= cost_home + safety_buffer + 1.0 or math.isinf(cost_home)):
+            return self.score_return_goal(rover, return_distances, return_path, emergency=True)
+
+        # 2. Evaluate candidate goals
+        upload_goals = self.evaluate_upload_goals(rover, return_distances)
+        collect_goals = self.evaluate_data_site_goals(rover, return_distances)
+        explore_goals = self.evaluate_frontier_goals(rover, return_distances)
+        return_goal = self.score_return_goal(rover, return_distances, return_path, emergency=False)
+
+        # 3. Check upload prioritization:
+        # Prioritize uploading when energy or mission conditions make continued exploration unsafe.
+        active_candidates: List[Goal] = []
+        if rover.unuploaded_value > 0 and upload_goals:
+            energy_margin = rover.energy - (cost_home + safety_buffer)
+            if energy_margin <= 40.0 or rover.unuploaded_value >= 40:
+                # Continued exploration is unsafe; prioritize upload and immediate collection
+                active_candidates = upload_goals + collect_goals
+            else:
+                active_candidates = upload_goals + collect_goals + explore_goals
+        else:
+            active_candidates = upload_goals + collect_goals + explore_goals
+
+        # 4. Pick best viable candidate
+        if active_candidates:
+            active_candidates.sort(key=lambda g: g.utility_score, reverse=True)
+            best_candidate = active_candidates[0]
+
+            if not rover.is_at_base and return_goal.utility_score > best_candidate.utility_score:
+                return return_goal
+
+            return best_candidate
+
+        # 5. Fallback: return to base
+        return return_goal
+
+    def select_goal(self, rover: Rover) -> Goal:
+        """Alias for choose_goal."""
+        return self.choose_goal(rover)
+
+    def find_path(self, rover: Rover, goal: Goal) -> Optional[List[Tuple[int, int]]]:
+        """Find or retrieve step-by-step path to goal."""
+        if goal.path:
+            return goal.path
+
+        if goal.goal_type == GoalType.RETURN:
+            return rover.get_return_path_home()
+
+        path_res = self.a_star(
+            rover.belief_map,
+            rover.position,
+            goal.target_pos,
+            rover.estimated_costs,
+            allow_unknown=False,
+        )
+        return path_res.path if path_res else None
+
+    def step_mission(
+        self,
+        rover: Rover,
+        world: Any,
+    ) -> Tuple[Optional[Goal], str]:
+        """Execute a single step of the mission decision loop."""
+        if rover.is_stranded:
+            return None, "Rover is stranded; no further actions possible."
+
+        # Sense current surroundings
+        rover.sense(world)
+
+        if rover.check_stranded():
+            return None, "Rover became stranded due to energy depletion."
+
+        # Choose goal
+        goal = self.choose_goal(rover)
+
+        # Action at destination:
+        if goal.goal_type == GoalType.COLLECT and rover.position == goal.target_pos:
+            site = rover.collect_data(world)
+            if site:
+                return goal, f"Collected data site {site.name} (value {site.value}). Buffer: {rover.unuploaded_value}."
+            return goal, "Data site was already collected."
+
+        if goal.goal_type == GoalType.UPLOAD and rover.position == goal.target_pos:
+            uploaded = rover.upload_data()
+            return goal, f"Uploaded {uploaded} data packages. Secured value: {rover.uploaded_value}."
+
+        if goal.goal_type == GoalType.RETURN and rover.is_at_base:
+            return goal, "Rover safely stationed at base. Mission concluded."
+
+        # Movement towards destination:
+        path = goal.path or self.find_path(rover, goal)
+        if not path or len(path) <= 1:
+            if goal.goal_type == GoalType.RETURN:
+                path = rover.get_return_path_home()
+
+        if path and len(path) > 1:
+            next_step = path[1]
+            success, reason = rover.safe_move(next_step, world)
+            if not success:
+                ret_path = rover.get_return_path_home()
+                if ret_path and len(ret_path) > 1:
+                    ret_step = ret_path[1]
+                    r_success, r_reason = rover.safe_move(ret_step, world)
+                    if r_success:
+                        return goal, f"Move towards goal blocked; fell back towards base: {r_reason}"
+                return goal, f"Move blocked: {reason}"
+            return goal, f"Moved towards {goal.goal_type.value} goal at {goal.target_pos}. {reason}"
+
+        return goal, f"No viable move towards {goal.goal_type.value} goal."

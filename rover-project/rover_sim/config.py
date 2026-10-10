@@ -99,6 +99,11 @@ class SimulationConfig:
     terrain_learning_rate: float = 0.3
     terrain_learning_method: str = "ema"  # "ema" or "running_avg"
 
+    # Utility planning and mission decisions (Phase 4)
+    explore_info_weight: float = 8.0
+    upload_urgency_factor: float = 1.5
+    allow_base_upload: bool = False
+
     # Dynamic obstacle settings (for Phase 5)
     dynamic_obstacles_enabled: bool = False
     obstacle_event_interval: int = 20

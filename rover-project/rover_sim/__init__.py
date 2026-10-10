@@ -13,6 +13,8 @@ from rover_sim.config import (
     TerrainType,
 )
 from rover_sim.planner import (
+    Goal,
+    GoalType,
     PathResult,
     RoverPlanner,
     SafetyCheckResult,
@@ -53,4 +55,6 @@ __all__ = [
     "RoverPlanner",
     "PathResult",
     "SafetyCheckResult",
+    "Goal",
+    "GoalType",
 ]
