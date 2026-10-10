@@ -46,6 +46,76 @@ class DiscoveredDataSite:
 
 
 @dataclass
+class DataCollectionRecord:
+    """Historical record for a scientific data collection and upload event."""
+    data_id: int
+    data_name: str
+    site_x: int  # column
+    site_y: int  # row
+    rover_pos_at_collection: Tuple[int, int]
+    value: int
+    collection_step: int
+    collection_status: str = "Collected"
+    upload_comm_zone_id: Optional[str] = None
+    upload_comm_zone_pos: Optional[Tuple[int, int]] = None
+    upload_step: Optional[int] = None
+    upload_status: str = "Pending Upload"  # "Pending Upload", "Uploaded", "Lost"
+
+    @property
+    def site_coords_rc(self) -> Tuple[int, int]:
+        """Return (row, column) coordinates."""
+        return self.site_y, self.site_x
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize record to structured dictionary representation."""
+        return {
+            "data_id": self.data_id,
+            "data_name": self.data_name,
+            "display_id": f"DS-{self.data_id}" if not str(self.data_id).startswith("DS") else str(self.data_id),
+            "site_x": self.site_x,
+            "site_y": self.site_y,
+            "site_row": self.site_y,
+            "site_col": self.site_x,
+            "site_coords": [self.site_x, self.site_y],
+            "site_coords_rc": [self.site_y, self.site_x],
+            "site_coords_str": f"({self.site_y}, {self.site_x})",
+            "rover_pos_at_collection": list(self.rover_pos_at_collection),
+            "value": self.value,
+            "collection_step": self.collection_step,
+            "collection_status": self.collection_status,
+            "upload_comm_zone": self.upload_comm_zone_id or "—",
+            "upload_comm_zone_id": self.upload_comm_zone_id,
+            "upload_comm_zone_pos": list(self.upload_comm_zone_pos) if self.upload_comm_zone_pos else None,
+            "upload_step": self.upload_step if self.upload_step is not None else "—",
+            "upload_status": self.upload_status,
+        }
+
+
+@dataclass
+class DataUploadEvent:
+    """Record of a successful batch upload event at a communication zone."""
+    upload_id: int
+    comm_zone_id: str
+    comm_zone_pos: Tuple[int, int]
+    upload_step: int
+    total_value: int
+    data_record_ids: List[int]
+    data_names: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize upload event to dictionary representation."""
+        return {
+            "upload_id": self.upload_id,
+            "comm_zone_id": self.comm_zone_id,
+            "comm_zone_pos": list(self.comm_zone_pos),
+            "upload_step": self.upload_step,
+            "total_value": self.total_value,
+            "data_record_ids": self.data_record_ids,
+            "data_names": self.data_names,
+        }
+
+
+@dataclass
 class BeliefCell:
     """A cell in the rover's internal Belief Map.
 
@@ -406,6 +476,10 @@ class Rover:
         self.lost_data: List[DiscoveredDataSite] = []
         self.is_stranded: bool = False
 
+        # Scientific data collection & upload history tracking
+        self.data_history: List[DataCollectionRecord] = []
+        self.upload_events: List[DataUploadEvent] = []
+
         # History and step tracking
         self.step_count: int = 0
         self.path_history: List[Tuple[int, int]] = [position]
@@ -714,6 +788,10 @@ class Rover:
         return_table = self.get_return_costs()
         return return_table.get(check_pos, math.inf)
 
+    def get_safe_return_cost(self, pos: Optional[Tuple[int, int]] = None) -> float:
+        """Get the estimated energy cost to return safely to base from given pos (or current position)."""
+        return self.get_cost_home(pos)
+
     def get_return_path_home(
         self, pos: Optional[Tuple[int, int]] = None
     ) -> Optional[List[Tuple[int, int]]]:
@@ -750,10 +828,15 @@ class Rover:
         self.sense(world)
         return True
 
-    def collect_data(self, world: Optional[GroundTruthMap] = None) -> Optional[DiscoveredDataSite]:
+    def collect_data(
+        self,
+        world: Optional[GroundTruthMap] = None,
+        step: Optional[int] = None,
+    ) -> Optional[DiscoveredDataSite]:
         """Collect scientific data at the rover's current position.
 
-        Moves data into the rover's un-uploaded buffer and registers it in collected_data.
+        Moves data into the rover's un-uploaded buffer and registers it in collected_data
+        and data_history.
         """
         cx, cy = self.position
         cell = self.belief_map.get_cell(cx, cy)
@@ -765,6 +848,24 @@ class Rover:
             if site not in self._collected_data:
                 self._collected_data.append(site)
 
+            cur_step = step if step is not None else self.step_count
+
+            # Create data history record if not already recorded for this site
+            existing = any(r.data_id == site.id for r in self.data_history)
+            if not existing:
+                record = DataCollectionRecord(
+                    data_id=site.id,
+                    data_name=site.name,
+                    site_x=site.x,
+                    site_y=site.y,
+                    rover_pos_at_collection=(cx, cy),
+                    value=site.value,
+                    collection_step=cur_step,
+                    collection_status="Collected",
+                    upload_status="Pending Upload",
+                )
+                self.data_history.append(record)
+
             # Also reflect collection status in ground truth if world reference passed
             if world is not None and world.in_bounds(cx, cy):
                 gt_site = world.get_data_site(cx, cy)
@@ -775,10 +876,15 @@ class Rover:
 
         return None
 
-    def upload_data(self, force: bool = False) -> int:
+    def upload_data(
+        self,
+        force: bool = False,
+        world: Optional[GroundTruthMap] = None,
+        step: Optional[int] = None,
+    ) -> int:
         """Upload all buffered data at a communication zone.
 
-        Banks buffered data into secured data.
+        Banks buffered data into secured data and updates history records.
         Returns the number of data packages secured.
         """
         cx, cy = self.position
@@ -790,8 +896,74 @@ class Rover:
 
         if can_upload:
             uploaded_count = len(self.data_buffer)
-            self.secured_data.extend(self.data_buffer)
-            self.data_buffer.clear()
+            if uploaded_count > 0:
+                cur_step = step if step is not None else self.step_count
+
+                # Ensure any buffered item without a history record gets registered
+                for s in self.data_buffer:
+                    if not any(r.data_id == s.id for r in self.data_history):
+                        self.data_history.append(
+                            DataCollectionRecord(
+                                data_id=s.id,
+                                data_name=s.name,
+                                site_x=s.x,
+                                site_y=s.y,
+                                rover_pos_at_collection=(cx, cy),
+                                value=s.value,
+                                collection_step=cur_step,
+                                collection_status="Collected",
+                                upload_status="Pending Upload",
+                            )
+                        )
+
+                # Identify communication zone name and position
+                cz_name = "Communication Zone"
+                cz_pos = (cx, cy)
+
+                if world is not None:
+                    if (cx, cy) in world.comm_zones:
+                        cz_idx = world.comm_zones.index((cx, cy)) + 1
+                        cz_name = f"CZ-{cz_idx} (r:{cy}, c:{cx})"
+                    elif (cx, cy) == world.base_pos:
+                        cz_name = f"Base Station (r:{cy}, c:{cx})"
+                    else:
+                        cz_name = f"Comm Zone (r:{cy}, c:{cx})"
+                else:
+                    if hasattr(self.belief_map, "known_comm_zones") and (cx, cy) in self.belief_map.known_comm_zones:
+                        sorted_cz = sorted(list(self.belief_map.known_comm_zones))
+                        cz_idx = sorted_cz.index((cx, cy)) + 1 if (cx, cy) in sorted_cz else 1
+                        cz_name = f"CZ-{cz_idx} (r:{cy}, c:{cx})"
+                    elif cell.is_base:
+                        cz_name = f"Base Station (r:{cy}, c:{cx})"
+                    else:
+                        cz_name = f"Comm Zone (r:{cy}, c:{cx})"
+
+                buffered_ids = {s.id for s in self.data_buffer}
+                total_value = sum(s.value for s in self.data_buffer)
+
+                # Update matching records in data_history
+                for rec in self.data_history:
+                    if rec.data_id in buffered_ids and rec.upload_status == "Pending Upload":
+                        rec.upload_comm_zone_id = cz_name
+                        rec.upload_comm_zone_pos = cz_pos
+                        rec.upload_step = cur_step
+                        rec.upload_status = "Uploaded"
+
+                # Record upload event
+                upload_event = DataUploadEvent(
+                    upload_id=len(self.upload_events) + 1,
+                    comm_zone_id=cz_name,
+                    comm_zone_pos=cz_pos,
+                    upload_step=cur_step,
+                    total_value=total_value,
+                    data_record_ids=list(buffered_ids),
+                    data_names=[s.name for s in self.data_buffer],
+                )
+                self.upload_events.append(upload_event)
+
+                self.secured_data.extend(self.data_buffer)
+                self.data_buffer.clear()
+
             return uploaded_count
 
         return 0
@@ -799,10 +971,35 @@ class Rover:
     def mark_stranded(self) -> None:
         """Mark the rover as stranded.
 
-        Any unuploaded data in data_buffer is lost.
+        Any unuploaded data in data_buffer is lost and marked as Lost in history.
         """
         self.is_stranded = True
         if self.data_buffer:
+            lost_ids = {s.id for s in self.data_buffer}
+            # Ensure history records exist for buffered items
+            for s in self.data_buffer:
+                if not any(r.data_id == s.id for r in self.data_history):
+                    self.data_history.append(
+                        DataCollectionRecord(
+                            data_id=s.id,
+                            data_name=s.name,
+                            site_x=s.x,
+                            site_y=s.y,
+                            rover_pos_at_collection=self.position,
+                            value=s.value,
+                            collection_step=self.step_count,
+                            collection_status="Collected",
+                            upload_status="Pending Upload",
+                        )
+                    )
+
+            for rec in self.data_history:
+                if rec.data_id in lost_ids and rec.upload_status == "Pending Upload":
+                    rec.upload_status = "Lost"
+                    rec.upload_comm_zone_id = None
+                    rec.upload_comm_zone_pos = None
+                    rec.upload_step = None
+
             self.lost_data.extend(self.data_buffer)
             self.data_buffer.clear()
 
@@ -960,6 +1157,11 @@ class Rover:
     def secured_value(self) -> int:
         """Sum of scientific value secured through upload (backwards compatibility)."""
         return self.uploaded_value
+
+    @property
+    def data_collection_history(self) -> List[DataCollectionRecord]:
+        """Return full scientific data collection and upload history records."""
+        return self.data_history
 
     def status(self) -> Dict[str, Any]:
         """Return detailed rover status dictionary."""

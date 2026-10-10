@@ -668,17 +668,25 @@ class RoverPlanner:
                 path=return_path,
             )
 
-        survival_reward = 30.0
-        effective_cost = max(cost_home, 1.0)
-        utility_score = survival_reward / effective_cost
+        surplus_energy = max(0.0, rover.energy - (cost_home + safety_buffer))
+        threshold = 30.0  # Safe exploration margin threshold
+        if surplus_energy > threshold:
+            # Abundant surplus energy: low baseline utility so frontier/science goals take precedence
+            utility_score = max(0.01, 10.0 / (surplus_energy + 1.0))
+            expected_reward = 1.0
+        else:
+            # Low surplus energy: return urgency rises from 1.0 to 35.0+ as surplus vanishes
+            urgency = (threshold - surplus_energy) / threshold
+            utility_score = 1.0 + urgency * 35.0
+            expected_reward = 30.0 * urgency
 
         return Goal(
             goal_type=GoalType.RETURN,
             target_pos=base_pos,
             utility_score=utility_score,
-            expected_reward=survival_reward,
+            expected_reward=expected_reward,
             estimated_energy_cost=cost_home,
-            reason=f"Return safely to base (cost: {cost_home:.1f})",
+            reason=f"Return safely to base (cost: {cost_home:.1f}, surplus: {surplus_energy:.1f})",
             path=return_path,
         )
 
@@ -867,7 +875,7 @@ class RoverPlanner:
             return goal, "Data site was already collected."
 
         if goal.goal_type == GoalType.UPLOAD and rover.position == goal.target_pos:
-            uploaded = rover.upload_data()
+            uploaded = rover.upload_data(world=world)
             rover.current_path = None
             rover.current_goal = None
             return goal, f"Uploaded {uploaded} data packages. Secured value: {rover.uploaded_value}."
@@ -894,8 +902,10 @@ class RoverPlanner:
                 if new_path and len(new_path) > 1:
                     r_success, r_reason = rover.safe_move(new_path[1], world)
                     if r_success:
+                        rover.current_path = new_path[1:]
                         return goal, f"Replanned around obstacle; stepped to {new_path[1]}: {r_reason}"
                 return goal, f"Move blocked: {reason}"
+            rover.current_path = path[1:]
             return goal, f"Moved towards {goal.goal_type.value} goal at {goal.target_pos}. {reason}"
 
         return goal, f"No viable move towards {goal.goal_type.value} goal."

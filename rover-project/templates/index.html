@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lost in Space: Autonomous Rover Mission Control</title>
+    <meta name="description" content="Autonomous Mars/Planetary Rover Mission Control telemetry dashboard with side-by-side Ground Truth and Belief maps, dynamic replanning, and scientific data accounting.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="mission-container">
+        <!-- Top Navigation & Mission Control Header -->
+        <header class="mission-header" id="header-panel">
+            <div class="brand-section">
+                <div class="radar-ping-icon" aria-hidden="true"></div>
+                <div>
+                    <h1 class="mission-title">LOST IN SPACE // ROVER MISSION CONTROL</h1>
+                    <p class="mission-subtitle">Autonomous Planetary Exploration, Belief Mapping & Adaptive Replanning</p>
+                </div>
+            </div>
+
+            <!-- Global Status & Seed Config -->
+            <div class="header-controls">
+                <div class="mission-badge-container">
+                    <span class="badge-label">MISSION STATUS</span>
+                    <span id="mission-status-badge" class="status-badge status-in-progress">IN PROGRESS</span>
+                </div>
+
+                <div class="control-group">
+                    <label for="input-seed" class="control-label">MAP SEED</label>
+                    <input type="number" id="input-seed" class="text-input" value="42" min="1" max="999999" title="Random seed for procedural generation">
+                </div>
+
+                <div class="control-group">
+                    <label for="select-speed" class="control-label">STEP SPEED</label>
+                    <select id="select-speed" class="select-input">
+                        <option value="50">Fast (50ms)</option>
+                        <option value="150">Brisk (150ms)</option>
+                        <option value="250" selected>Normal (250ms)</option>
+                        <option value="500">Slow (500ms)</option>
+                        <option value="1000">Step-by-Step (1000ms)</option>
+                    </select>
+                </div>
+
+                <div class="control-group checkbox-group">
+                    <label class="checkbox-label" title="Enable seeded rockslides and dynamic environmental obstacles">
+                        <input type="checkbox" id="toggle-dynamic-obs" checked>
+                        <span>Dynamic Obstacles</span>
+                    </label>
+                </div>
+            </div>
+        </header>
+
+        <!-- Command Toolbar -->
+        <nav class="command-toolbar" id="toolbar-panel">
+            <div class="toolbar-left">
+                <button id="btn-start" class="btn btn-primary" title="Start autonomous mission loop">
+                    <span class="btn-icon">▶</span> START
+                </button>
+                <button id="btn-pause" class="btn btn-secondary" title="Pause mission execution" disabled>
+                    <span class="btn-icon">⏸</span> PAUSE
+                </button>
+                <button id="btn-resume" class="btn btn-secondary" title="Resume paused mission" disabled>
+                    <span class="btn-icon">⏵</span> RESUME
+                </button>
+                <button id="btn-step" class="btn btn-secondary" title="Execute single simulation tick">
+                    <span class="btn-icon">⏭</span> STEP
+                </button>
+                <button id="btn-reset" class="btn btn-danger" title="Reset mission with selected seed">
+                    <span class="btn-icon">↺</span> RESET
+                </button>
+            </div>
+            <div class="toolbar-right">
+                <div class="ticker-item">
+                    <span class="ticker-label">STEP:</span>
+                    <span id="telemetry-step-count" class="ticker-val">0</span>
+                </div>
+                <div class="ticker-divider"></div>
+                <div class="ticker-item">
+                    <span class="ticker-label">COVERAGE:</span>
+                    <span id="telemetry-coverage" class="ticker-val">0.0%</span>
+                </div>
+                <div class="ticker-divider"></div>
+                <div class="ticker-item">
+                    <span class="ticker-label">REPLANS:</span>
+                    <span id="telemetry-replans" class="ticker-val">0</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- KPI Telemetry Bar -->
+        <section class="telemetry-kpi-grid" id="kpi-panel">
+            <!-- Energy Card -->
+            <div class="kpi-card energy-card">
+                <div class="card-header-sm">
+                    <span class="card-tag">POWER SUBSYSTEM</span>
+                    <span id="energy-numeric" class="mono-value">300.0 / 300.0</span>
+                </div>
+                <div class="energy-gauge-bar">
+                    <div id="energy-gauge-fill" class="energy-fill" style="width: 100%;"></div>
+                </div>
+                <div class="kpi-footer-row">
+                    <span id="energy-percentage">100.0% Battery</span>
+                    <span id="energy-used-label">Used: 0.0</span>
+                </div>
+            </div>
+
+            <!-- Position & Safe Return -->
+            <div class="kpi-card">
+                <div class="card-header-sm">
+                    <span class="card-tag">NAVIGATION & POI</span>
+                    <span id="rover-pos-display" class="mono-value">(0, 0)</span>
+                </div>
+                <div class="kpi-value-row">
+                    <div class="kpi-mini-col">
+                        <span class="mini-label">RETURN COST</span>
+                        <span id="return-cost-val" class="mini-value text-safe">0.0</span>
+                    </div>
+                    <div class="kpi-mini-col">
+                        <span class="mini-label">SAFETY BUFFER</span>
+                        <span id="safety-buffer-val" class="mini-value text-warning">36.0</span>
+                    </div>
+                    <div class="kpi-mini-col">
+                        <span class="mini-label">LOCATION</span>
+                        <span id="base-status-tag" class="mini-value text-safe">At Base</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Scientific Data Accounting -->
+            <div class="kpi-card">
+                <div class="card-header-sm">
+                    <span class="card-tag">SCIENCE PAYLOAD</span>
+                    <span id="data-total-yield" class="mono-value text-accent">0 Value</span>
+                </div>
+                <div class="data-accounting-row">
+                    <div class="data-stat-badge stat-collected" title="Scientific data acquired at planetary sites">
+                        <span class="stat-num" id="data-collected-val">0</span>
+                        <span class="stat-lbl">Collected</span>
+                    </div>
+                    <div class="data-stat-badge stat-uploaded" title="Secured scientific data transmitted to base/comm zone">
+                        <span class="stat-num" id="data-uploaded-val">0</span>
+                        <span class="stat-lbl">Uploaded</span>
+                    </div>
+                    <div class="data-stat-badge stat-buffered" title="Unsecured buffer on rover (at risk of loss if stranded)">
+                        <span class="stat-num" id="data-unuploaded-val">0</span>
+                        <span class="stat-lbl">Buffer</span>
+                    </div>
+                    <div class="data-stat-badge stat-lost" title="Data lost due to rover stranding">
+                        <span class="stat-num" id="data-lost-val">0</span>
+                        <span class="stat-lbl">Lost</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Current Objective / Goal -->
+            <div class="kpi-card">
+                <div class="card-header-sm">
+                    <span class="card-tag">CURRENT DIRECTIVE</span>
+                    <span id="goal-type-badge" class="badge-goal-explore">INITIALIZE</span>
+                </div>
+                <p id="goal-target-desc" class="goal-desc">Awaiting first command directive...</p>
+                <div class="kpi-footer-row">
+                    <span id="goal-utility-val">Utility: 0.0</span>
+                    <span id="goal-cost-val">Cost: 0.0</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Workspace: Side-by-Side Dual Map Displays -->
+        <main class="dual-map-container" id="maps-panel">
+            <!-- Left Panel: Ground Truth Map -->
+            <article class="map-card" id="card-ground-truth">
+                <div class="map-card-header">
+                    <div class="map-title-row">
+                        <span class="map-indicator ind-truth"></span>
+                        <h2 class="map-title">GROUND TRUTH MAP</h2>
+                        <span class="map-dimension-badge">40 × 40 ACTUAL TERRAIN</span>
+                    </div>
+                    <div class="map-meta-info">
+                        <span id="gt-dynamic-count" class="badge-dyn-obs">Dynamic Obs: 0</span>
+                    </div>
+                </div>
+                <div class="canvas-wrapper">
+                    <canvas id="canvas-ground-truth" width="600" height="600" class="map-canvas"></canvas>
+                    <div id="tooltip-ground-truth" class="map-tooltip"></div>
+                </div>
+                <div class="map-legend">
+                    <div class="legend-item"><span class="legend-swatch sw-rover"></span> Rover [R]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-base"></span> Base [B]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-comm"></span> Comm Zone [C]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-data"></span> Data Site [D]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-flat"></span> Flat</div>
+                    <div class="legend-item"><span class="legend-swatch sw-rough"></span> Rough</div>
+                    <div class="legend-item"><span class="legend-swatch sw-mountain"></span> Mountain</div>
+                    <div class="legend-item"><span class="legend-swatch sw-rock"></span> Static Rock</div>
+                    <div class="legend-item"><span class="legend-swatch sw-dynamic"></span> Dynamic Rock [!]</div>
+                </div>
+            </article>
+
+            <!-- Right Panel: Rover Belief Map -->
+            <article class="map-card" id="card-belief-map">
+                <div class="map-card-header">
+                    <div class="map-title-row">
+                        <span class="map-indicator ind-belief"></span>
+                        <h2 class="map-title">ROVER BELIEF MAP</h2>
+                        <span class="map-dimension-badge">INTERNAL SENSORY MODEL</span>
+                    </div>
+                    <div class="map-meta-info">
+                        <span id="belief-known-count" class="badge-known-cells">Known: 25 / 1600</span>
+                    </div>
+                </div>
+                <div class="canvas-wrapper">
+                    <canvas id="canvas-belief-map" width="600" height="600" class="map-canvas"></canvas>
+                    <div id="tooltip-belief-map" class="map-tooltip"></div>
+                </div>
+                <div class="map-legend">
+                    <div class="legend-item"><span class="legend-swatch sw-rover"></span> Rover [R]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-unknown"></span> Unknown [?]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-visible"></span> Visible Scan</div>
+                    <div class="legend-item"><span class="legend-swatch sw-visited"></span> Visited Trail</div>
+                    <div class="legend-item"><span class="legend-swatch sw-frontier"></span> Frontier [F]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-path"></span> Planned Path [*]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-discovered-rock"></span> Sensed Obstacle [X]</div>
+                    <div class="legend-item"><span class="legend-swatch sw-data"></span> Known Site</div>
+                </div>
+            </article>
+        </main>
+
+        <!-- Scientific Data Collection & Upload History Section -->
+        <section class="card data-history-card" id="card-data-history">
+            <div class="card-header-md">
+                <div class="data-history-header-left">
+                    <span class="history-header-icon">🔬</span>
+                    <div>
+                        <h3 class="card-heading">SCIENTIFIC DATA COLLECTION & UPLOAD HISTORY</h3>
+                        <span class="sub-heading">Real-Time Planetary Sample Telemetry & Communication Relay Logs</span>
+                    </div>
+                </div>
+                <div class="data-history-summary-pills" id="data-history-summary-pills">
+                    <span class="history-pill pill-collected" id="pill-val-collected">Collected: 0 Val</span>
+                    <span class="history-pill pill-uploaded" id="pill-val-uploaded">Uploaded: 0 Val</span>
+                    <span class="history-pill pill-pending" id="pill-val-pending">Pending: 0 Val</span>
+                    <span class="history-pill pill-lost" id="pill-val-lost">Lost: 0 Val</span>
+                </div>
+            </div>
+
+            <div class="data-history-table-container">
+                <table class="data-history-table" id="table-data-history">
+                    <thead>
+                        <tr>
+                            <th scope="col">Data ID</th>
+                            <th scope="col">Data Site Coordinates (row, column)</th>
+                            <th scope="col">Scientific Data Value</th>
+                            <th scope="col">Collection Step</th>
+                            <th scope="col">Collection Status</th>
+                            <th scope="col">Upload Communication Zone</th>
+                            <th scope="col">Upload Step</th>
+                            <th scope="col">Upload Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="data-history-tbody">
+                        <!-- Populated by JavaScript from real simulation state -->
+                    </tbody>
+                </table>
+                <div class="history-empty-state" id="data-history-empty-message">
+                    <span class="empty-icon">🛰️</span>
+                    <p class="empty-text">No scientific data collected yet. Rover is exploring the planetary terrain.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Bottom Insights Row: Terrain Cost Learning & Event Decision Log -->
+        <footer class="bottom-insights-grid" id="insights-panel">
+            <!-- Terrain Cost Comparison Card -->
+            <section class="card insight-card" id="card-terrain-costs">
+                <div class="card-header-md">
+                    <h3 class="card-heading">TERRAIN ENERGY COSTS</h3>
+                    <span class="sub-heading">Learned Experience vs Ground Truth</span>
+                </div>
+                <div class="cost-table-container">
+                    <table class="cost-table" id="table-terrain-costs">
+                        <thead>
+                            <tr>
+                                <th>TERRAIN TYPE</th>
+                                <th>ESTIMATED (LEARNED)</th>
+                                <th>GROUND TRUTH</th>
+                                <th>ACCURACY</th>
+                            </tr>
+                        </thead>
+                        <tbody id="terrain-costs-tbody">
+                            <tr>
+                                <td><span class="cost-tag tag-flat">FLAT</span></td>
+                                <td id="cost-flat-est">1.0</td>
+                                <td id="cost-flat-act">1.0</td>
+                                <td id="cost-flat-acc" class="text-safe">100%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="cost-tag tag-rough">ROUGH</span></td>
+                                <td id="cost-rough-est">2.0</td>
+                                <td id="cost-rough-act">2.0</td>
+                                <td id="cost-rough-acc" class="text-safe">100%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="cost-tag tag-mountain">MOUNTAIN</span></td>
+                                <td id="cost-mountain-est">4.0</td>
+                                <td id="cost-mountain-act">4.0</td>
+                                <td id="cost-mountain-acc" class="text-safe">100%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="cost-tag tag-rock">ROCK / OBSTACLE</span></td>
+                                <td>∞ (Impassable)</td>
+                                <td>∞ (Impassable)</td>
+                                <td class="text-safe">Exact</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="cost-notes">
+                    <p class="cost-note-text">
+                        ★ The rover uses optimistic initial heuristics and adjusts internal edge weights as actual terrain friction is experienced during traverse.
+                    </p>
+                </div>
+            </section>
+
+            <!-- Real-Time Decision & Dynamic Event Terminal Feed -->
+            <section class="card insight-card terminal-card" id="card-decision-logs">
+                <div class="card-header-md">
+                    <div class="terminal-header-left">
+                        <span class="terminal-dot dot-red"></span>
+                        <span class="terminal-dot dot-yellow"></span>
+                        <span class="terminal-dot dot-green"></span>
+                        <h3 class="card-heading">MISSION LOG & DECISION STREAM</h3>
+                    </div>
+                    <span class="terminal-filter-label" id="log-count-badge">50 Events</span>
+                </div>
+                <div class="terminal-body" id="decision-log-container">
+                    <div class="log-entry log-info">
+                        <span class="log-step">[STEP 0]</span>
+                        <span class="log-badge badge-info">INFO</span>
+                        <span class="log-msg">Mission initialized at planetary base. Systems online.</span>
+                    </div>
+                </div>
+            </section>
+        </footer>
+    </div>
+
+    <!-- Application Script -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

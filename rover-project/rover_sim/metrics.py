@@ -76,15 +76,17 @@ class MetricsTracker:
         world: GroundTruthMap,
         goal_type: Optional[str] = None,
         reason: str = "",
+        step: Optional[int] = None,
     ) -> StepSnapshot:
         """Capture telemetry and record a new step snapshot."""
         known_count = len(rover.known_cells)
         tot_cells = world.width * world.height or self.total_cells
         coverage = (known_count / tot_cells) * 100.0 if tot_cells > 0 else 0.0
         energy_used = max(0.0, self.initial_energy - rover.energy)
+        cur_step = step if step is not None else rover.step_count
 
         snapshot = StepSnapshot(
-            step=rover.step_count,
+            step=cur_step,
             position=rover.position,
             energy_remaining=rover.energy,
             energy_used=energy_used,
@@ -131,7 +133,12 @@ class MetricsTracker:
         # Zero battery away from base
         return MissionOutcome.FAILURE
 
-    def get_summary(self, rover: Rover, world: GroundTruthMap) -> Dict[str, Any]:
+    def get_summary(
+        self,
+        rover: Rover,
+        world: GroundTruthMap,
+        step: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Generate comprehensive mission metrics summary."""
         tot_cells = world.width * world.height or self.total_cells
         known_count = len(rover.known_cells)
@@ -142,10 +149,11 @@ class MetricsTracker:
         efficiency = (
             rover.uploaded_value / energy_used if energy_used > 0 else 0.0
         )
+        cur_step = step if step is not None else rover.step_count
 
         return {
             "mission_outcome": outcome.value,
-            "steps_completed": rover.step_count,
+            "steps_completed": cur_step,
             "coverage_percent": round(coverage_pct, 2),
             "known_cells": known_count,
             "total_cells": tot_cells,

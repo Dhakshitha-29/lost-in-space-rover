@@ -17,6 +17,11 @@ from rover_sim.events import (
     EventManager,
     EventType,
 )
+from rover_sim.metrics import (
+    MetricsTracker,
+    MissionOutcome,
+    StepSnapshot,
+)
 from rover_sim.planner import (
     Goal,
     GoalType,
@@ -28,9 +33,13 @@ from rover_sim.rover import (
     BeliefCell,
     BeliefMap,
     CellVisibilityState,
+    DataCollectionRecord,
+    DataUploadEvent,
     DiscoveredDataSite,
     Rover,
 )
+from rover_sim.session import SimulationSession
+from rover_sim.visualizer import MapVisualizer
 from rover_sim.world import (
     Cell,
     DataSite,
@@ -57,6 +66,8 @@ __all__ = [
     "BeliefCell",
     "CellVisibilityState",
     "DiscoveredDataSite",
+    "DataCollectionRecord",
+    "DataUploadEvent",
     "RoverPlanner",
     "PathResult",
     "SafetyCheckResult",
@@ -65,4 +76,9 @@ __all__ = [
     "DynamicEvent",
     "EventManager",
     "EventType",
+    "MetricsTracker",
+    "MissionOutcome",
+    "StepSnapshot",
+    "MapVisualizer",
+    "SimulationSession",
 ]
