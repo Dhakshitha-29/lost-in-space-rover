@@ -411,6 +411,12 @@ class Rover:
         self.path_history: List[Tuple[int, int]] = [position]
         self.belief_map.mark_visited(position[0], position[1])
 
+        # Dynamic events and replanning tracking (Phase 5)
+        self.current_goal: Optional[Any] = None
+        self.current_path: Optional[List[Tuple[int, int]]] = None
+        self.replan_count: int = 0
+        self.detected_obstacles: List[Tuple[int, int]] = []
+
         # Initial sensing if world is provided
         if world is not None:
             self.sense(world)
@@ -485,15 +491,28 @@ class Rover:
 
         Reveals ONLY cells within Manhattan distance <= sensor_radius.
         Copies observed physical data into belief map.
-        Never reveals actual movement costs before movement: uses rover's estimated costs!
+        Detects newly appeared dynamic obstacles, updates Belief Map,
+        and triggers replanning if the rover's current route is invalidated.
         """
         visible_coords = self.get_visible_positions(world.width, world.height)
         visible_set = set(visible_coords)
 
+        newly_blocked: List[Tuple[int, int]] = []
+
         for x, y in visible_coords:
             # Read single physical cell from Ground Truth
             cell = world.get_cell(x, y)
-            data_site = cell.data_site
+            prior = self.belief_map.get_cell(x, y)
+
+            # Check if this cell was previously known as passable and has now become an obstacle
+            is_new_obstacle = (
+                prior.is_known
+                and prior.is_passable
+                and (cell.terrain == TerrainType.ROCK or math.isinf(cell.cost))
+            )
+            if is_new_obstacle:
+                newly_blocked.append((x, y))
+                self.experienced_costs.pop((x, y), None)
 
             # Use estimated cost for unvisited terrain (actual cost is never revealed prior to movement)
             if cell.terrain == TerrainType.ROCK:
@@ -513,17 +532,86 @@ class Rover:
                 cost=cost_estimate,
                 is_base=cell.is_base,
                 is_comm_zone=cell.is_comm_zone,
-                data_site=data_site,
+                data_site=cell.data_site,
                 step_number=self.step_count,
             )
 
         self.belief_map.set_current_visible(visible_set)
+
+        # Process newly discovered obstacles
+        if newly_blocked:
+            for obs in newly_blocked:
+                if obs not in self.detected_obstacles:
+                    self.detected_obstacles.append(obs)
+
+            # Check if current planned route intersects with any newly blocked cell
+            path_invalidated = False
+            if self.current_path:
+                rem_path = list(self.current_path)
+                if self.position in rem_path:
+                    idx = rem_path.index(self.position)
+                    rem_path = rem_path[idx:]
+                for obs in newly_blocked:
+                    if obs in rem_path:
+                        path_invalidated = True
+                        break
+
+            if path_invalidated:
+                self.replan()
+
         return visible_set
+
+    def replan(self) -> bool:
+        """Invalidate affected route, update safe-return budget, and replan route or goal.
+
+        Triggered when a dynamic obstacle is sensed on the rover's planned route.
+        1. Increments replan count.
+        2. Recomputes Dijkstra return cost table from base.
+        3. Re-evaluates Point of No Return safety.
+        4. Replans route to current goal if still viable, or aborts/selects new goal.
+        """
+        self.replan_count += 1
+        base_pos = self.belief_map.base_pos or self.position
+        return_distances, next_hop = self.planner.dijkstra_return_costs(
+            self.belief_map, base_pos, self.estimated_costs
+        )
+        cost_home = return_distances.get(self.position, math.inf)
+        safety_buffer = self.safety_margin * self.max_energy
+
+        # 1. Point of No Return safety check:
+        if math.isinf(cost_home) or self.energy <= cost_home + safety_buffer + 1.0:
+            self.current_goal = self.planner.score_return_goal(
+                self, return_distances, emergency=True
+            )
+            self.current_path = self.planner.get_return_path(next_hop, self.position, base_pos)
+            return True
+
+        # 2. Attempt to replan to current goal if goal target is still passable
+        from rover_sim.planner import GoalType
+        if self.current_goal is not None and self.current_goal.goal_type != GoalType.RETURN:
+            tgt = self.current_goal.target_pos
+            if self.belief_map.in_bounds(tgt[0], tgt[1]):
+                tgt_cell = self.belief_map.get_cell(tgt[0], tgt[1])
+                if tgt_cell.is_passable:
+                    path_res = self.planner.a_star(
+                        self.belief_map, self.position, tgt, self.estimated_costs, allow_unknown=False
+                    )
+                    if path_res is not None:
+                        path_cost = path_res.total_estimated_cost
+                        cost_home_tgt = return_distances.get(tgt, math.inf)
+                        if self.energy >= path_cost + cost_home_tgt + safety_buffer:
+                            self.current_path = path_res.path
+                            return True
+
+        # 3. Fallback: select new optimal goal with updated belief map
+        self.current_goal = self.planner.choose_goal(self)
+        self.current_path = self.planner.find_path(self, self.current_goal)
+        return True
 
     def move(self, target_pos: Tuple[int, int], world: GroundTruthMap) -> bool:
         """Attempt to move rover to an adjacent cell (tx, ty).
 
-        Validates adjacency, checks physical passability in world,
+        Validates adjacency, checks physical passability in world and belief,
         deducts energy cost, learns experienced terrain cost, updates position,
         marks cell as visited, and triggers automatic sensing.
         """
@@ -537,6 +625,13 @@ class Rover:
         # Verify bounds
         if not world.in_bounds(tx, ty):
             return False
+
+        # Check if known impassable in rover's belief map
+        if self.belief_map.in_bounds(tx, ty):
+            believed_cell = self.belief_map.get_cell(tx, ty)
+            if believed_cell.is_known and not believed_cell.is_passable:
+                # Rover knows this cell is an obstacle / rock; movement refused!
+                return False
 
         # Physical passability check in ground truth
         move_cost = world.get_cost(tx, ty)
@@ -728,9 +823,13 @@ class Rover:
         """Use planner to evaluate and score all candidate goals."""
         return self.planner.evaluate_goals(self)
 
-    def step_mission(self, world: GroundTruthMap):
+    def step_mission(
+        self,
+        world: GroundTruthMap,
+        event_manager: Optional[Any] = None,
+    ):
         """Execute a single step of the mission decision loop using planner."""
-        return self.planner.step_mission(self, world)
+        return self.planner.step_mission(self, world, event_manager=event_manager)
 
     # Visibility / Lifecycle queries
     def is_unknown(self, x: int, y: int) -> bool:
@@ -889,6 +988,8 @@ class Rover:
             "visited_count": len(self.visited_cells),
             "known_count": len(self.known_cells),
             "frontier_count": len(self.frontier),
+            "replan_count": self.replan_count,
+            "detected_obstacles_count": len(self.detected_obstacles),
         }
 
     def render_ascii_belief(self, show_legend: bool = True, coords: bool = True) -> str:

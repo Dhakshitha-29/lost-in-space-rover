@@ -122,6 +122,13 @@ class GroundTruthMap:
         self.data_sites = dict(data_sites)
         self.highest_value_site = highest_value_site
 
+        # Dynamic events manager (Phase 5)
+        if getattr(config, "dynamic_obstacles_enabled", False):
+            from rover_sim.events import EventManager
+            self.event_manager = EventManager(config=config)
+        else:
+            self.event_manager = None
+
     def in_bounds(self, x: int, y: int) -> bool:
         """Check whether (x, y) lies within grid boundaries."""
         return 0 <= x < self.width and 0 <= y < self.height
@@ -265,6 +272,13 @@ class GroundTruthMap:
             cell.terrain = TerrainType.FLAT
             cell.cost = self.config.get_terrain_cost(TerrainType.FLAT)
         return True
+
+    def maybe_add_obstacles(self, step: int = 0, rover: Optional[Any] = None) -> Optional[Any]:
+        """Trigger dynamic obstacles according to event configuration."""
+        if hasattr(self, "event_manager") and self.event_manager is not None:
+            r_pos = getattr(rover, "position", None)
+            return self.event_manager.maybe_trigger_event(step, self, rover_pos=r_pos)
+        return None
 
     def summary(self) -> Dict[str, Any]:
         """Generate summary statistics of the planetary map."""

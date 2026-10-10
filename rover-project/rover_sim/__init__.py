@@ -12,6 +12,11 @@ from rover_sim.config import (
     SimulationConfig,
     TerrainType,
 )
+from rover_sim.events import (
+    DynamicEvent,
+    EventManager,
+    EventType,
+)
 from rover_sim.planner import (
     Goal,
     GoalType,
@@ -57,4 +62,7 @@ __all__ = [
     "SafetyCheckResult",
     "Goal",
     "GoalType",
+    "DynamicEvent",
+    "EventManager",
+    "EventType",
 ]

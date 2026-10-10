@@ -831,50 +831,70 @@ class RoverPlanner:
         self,
         rover: Rover,
         world: Any,
+        event_manager: Optional[Any] = None,
     ) -> Tuple[Optional[Goal], str]:
         """Execute a single step of the mission decision loop."""
         if rover.is_stranded:
             return None, "Rover is stranded; no further actions possible."
 
-        # Sense current surroundings
+        # Trigger dynamic event if event manager is attached
+        if event_manager is not None:
+            event_manager.maybe_trigger_event(rover.step_count, world, rover.position)
+        elif hasattr(world, "maybe_add_obstacles"):
+            world.maybe_add_obstacles(rover.step_count, rover)
+
+        # Sense current surroundings (automatically checks for new obstacles and triggers replan if needed)
         rover.sense(world)
 
         if rover.check_stranded():
             return None, "Rover became stranded due to energy depletion."
 
-        # Choose goal
-        goal = self.choose_goal(rover)
+        # If no goal or path, select optimal goal
+        if rover.current_goal is None or rover.current_path is None or len(rover.current_path) <= 1:
+            goal = self.choose_goal(rover)
+            rover.current_goal = goal
+            rover.current_path = self.find_path(rover, goal)
+        else:
+            goal = rover.current_goal
 
         # Action at destination:
         if goal.goal_type == GoalType.COLLECT and rover.position == goal.target_pos:
             site = rover.collect_data(world)
+            rover.current_path = None
+            rover.current_goal = None
             if site:
                 return goal, f"Collected data site {site.name} (value {site.value}). Buffer: {rover.unuploaded_value}."
             return goal, "Data site was already collected."
 
         if goal.goal_type == GoalType.UPLOAD and rover.position == goal.target_pos:
             uploaded = rover.upload_data()
+            rover.current_path = None
+            rover.current_goal = None
             return goal, f"Uploaded {uploaded} data packages. Secured value: {rover.uploaded_value}."
 
         if goal.goal_type == GoalType.RETURN and rover.is_at_base:
+            rover.current_path = None
             return goal, "Rover safely stationed at base. Mission concluded."
 
         # Movement towards destination:
-        path = goal.path or self.find_path(rover, goal)
+        path = rover.current_path or self.find_path(rover, goal)
         if not path or len(path) <= 1:
             if goal.goal_type == GoalType.RETURN:
                 path = rover.get_return_path_home()
+
+        rover.current_path = path
 
         if path and len(path) > 1:
             next_step = path[1]
             success, reason = rover.safe_move(next_step, world)
             if not success:
-                ret_path = rover.get_return_path_home()
-                if ret_path and len(ret_path) > 1:
-                    ret_step = ret_path[1]
-                    r_success, r_reason = rover.safe_move(ret_step, world)
+                # Move failed (e.g. newly discovered obstacle); trigger replanning
+                rover.replan()
+                new_path = rover.current_path
+                if new_path and len(new_path) > 1:
+                    r_success, r_reason = rover.safe_move(new_path[1], world)
                     if r_success:
-                        return goal, f"Move towards goal blocked; fell back towards base: {r_reason}"
+                        return goal, f"Replanned around obstacle; stepped to {new_path[1]}: {r_reason}"
                 return goal, f"Move blocked: {reason}"
             return goal, f"Moved towards {goal.goal_type.value} goal at {goal.target_pos}. {reason}"
 
