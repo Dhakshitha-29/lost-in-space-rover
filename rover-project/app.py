@@ -116,6 +116,56 @@ def create_app(seed: int = 42, dynamic_obstacles: bool = True) -> Flask:
             res = session.get_data_history()
         return jsonify(res)
 
+    @app.route("/api/experiments", methods=["GET"])
+    def get_experiments():
+        """Retrieve aggregated Monte Carlo strategy evaluation results."""
+        from rover_sim.experiments import ExperimentRunner
+
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiment_results.csv")
+        results = ExperimentRunner.load_csv(csv_path)
+        if not results and os.path.exists("experiment_results.csv"):
+            results = ExperimentRunner.load_csv("experiment_results.csv")
+
+        if not results:
+            return jsonify({
+                "available": False,
+                "message": "No experiment results found. Run experiments.py or POST to /api/experiments/run.",
+                "summary": None,
+                "total_records": 0,
+            })
+
+        summary = ExperimentRunner.compute_summary(results)
+        return jsonify({
+            "available": True,
+            "csv_path": csv_path,
+            "total_records": len(results),
+            "summary": summary,
+        })
+
+    @app.route("/api/experiments/run", methods=["POST"])
+    def run_experiments_api():
+        """Trigger an automated strategy evaluation benchmark via API."""
+        from rover_sim.experiments import ExperimentRunner
+
+        data = request.get_json(silent=True) or {}
+        num_seeds = int(data.get("seeds", 5))
+        num_seeds = max(1, min(100, num_seeds))
+        max_steps = int(data.get("max_steps", 250))
+
+        seed_list = list(range(1, num_seeds + 1))
+        runner = ExperimentRunner(seeds=seed_list, max_steps=max_steps)
+        results = runner.run(parallel=False)
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiment_results.csv")
+        runner.save_csv(csv_path)
+        summary = ExperimentRunner.compute_summary(results)
+
+        return jsonify({
+            "success": True,
+            "seeds_tested": num_seeds,
+            "total_records": len(results),
+            "summary": summary,
+        })
+
     return app
 
 

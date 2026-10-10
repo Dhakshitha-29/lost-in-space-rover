@@ -91,6 +91,13 @@
         pillValUploaded: document.getElementById('pill-val-uploaded'),
         pillValPending: document.getElementById('pill-val-pending'),
         pillValLost: document.getElementById('pill-val-lost'),
+
+        // Phase 7: Strategy Evaluation
+        strategyEvalCard: document.getElementById('card-strategy-eval'),
+        strategyEvalTbody: document.getElementById('strategy-eval-tbody'),
+        evalBenchmarkInfo: document.getElementById('eval-benchmark-info'),
+        btnRefreshEval: document.getElementById('btn-refresh-eval'),
+        evalEmptyMsg: document.getElementById('eval-empty-message'),
     };
 
     const ctxGT = elements.canvasGT.getContext('2d');
@@ -496,6 +503,64 @@
         elements.dataHistoryTbody.innerHTML = html;
     }
 
+    async function fetchExperimentResults() {
+        if (!elements.strategyEvalTbody) return;
+        try {
+            const data = await apiRequest('/api/experiments', 'GET');
+            if (!data || !data.available || !data.summary) {
+                if (elements.evalEmptyMsg) elements.evalEmptyMsg.style.display = 'flex';
+                if (elements.evalBenchmarkInfo) elements.evalBenchmarkInfo.textContent = 'Benchmark Pending';
+                return;
+            }
+
+            if (elements.evalEmptyMsg) elements.evalEmptyMsg.style.display = 'none';
+            const s = data.summary;
+            if (elements.evalBenchmarkInfo) {
+                elements.evalBenchmarkInfo.textContent = `${s.total_seeds} Seeds · ${s.total_runs} Runs Benchmark`;
+            }
+
+            const strats = s.strategies || {};
+            const order = ['random', 'greedy_nearest', 'utility_planner'];
+            const sortedKeys = Object.keys(strats).sort((a, b) => {
+                const ia = order.indexOf(a) !== -1 ? order.indexOf(a) : 99;
+                const ib = order.indexOf(b) !== -1 ? order.indexOf(b) : 99;
+                return ia - ib;
+            });
+
+            let html = '';
+            for (const key of sortedKeys) {
+                const item = strats[key];
+                const isProposed = key === 'utility_planner';
+                const rowClass = isProposed ? 'strat-row-highlight' : '';
+                const icon = key === 'random' ? '🎲' : key === 'greedy_nearest' ? '⚡' : '🧠';
+                const tag = isProposed ? '<span class="badge-tag-proposed">PROPOSED</span>' : '';
+
+                html += `
+                    <tr class="${rowClass}">
+                        <td>
+                            <div class="strategy-title-cell">
+                                <span class="strat-icon">${icon}</span>
+                                <span>${escapeHtml(item.display_name)}</span>
+                                ${tag}
+                            </div>
+                        </td>
+                        <td><span class="status-badge status-success">${item.success_rate_percent}%</span> (${item.success_count})</td>
+                        <td><span class="status-badge status-partial">${item.partial_rate_percent}%</span> (${item.partial_count})</td>
+                        <td><span class="status-badge status-failure">${item.failure_rate_percent}%</span> (${item.failure_count})</td>
+                        <td class="text-accent">${item.avg_coverage_percent}%</td>
+                        <td class="text-safe">${item.avg_data_uploaded_value}</td>
+                        <td class="${item.avg_data_lost_value > 0 ? 'text-danger' : 'text-muted'}">${item.avg_data_lost_value}</td>
+                        <td>${item.avg_energy_used}</td>
+                        <td>${item.avg_replan_count}</td>
+                    </tr>
+                `;
+            }
+            elements.strategyEvalTbody.innerHTML = html;
+        } catch (err) {
+            console.error('Failed to fetch experiment results:', err);
+        }
+    }
+
     function escapeHtml(str) {
         return (str || '').replace(/[&<>"']/g, function (m) {
             return {
@@ -853,11 +918,16 @@
                 resetSimulation();
             }
         });
+
+        if (elements.btnRefreshEval) {
+            elements.btnRefreshEval.addEventListener('click', fetchExperimentResults);
+        }
     }
 
     // Initialize Dashboard
     setupEventListeners();
     setupCanvasTooltips();
     fetchState();
+    fetchExperimentResults();
 
 })();

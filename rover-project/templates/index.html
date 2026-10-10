@@ -273,6 +273,55 @@
             </div>
         </section>
 
+        <!-- Phase 7: Automated Strategy Evaluation (Monte Carlo Benchmark) Section -->
+        <section class="card strategy-eval-section" id="card-strategy-eval">
+            <div class="card-header-md data-history-header">
+                <div class="title-with-badge">
+                    <span class="section-icon">📊</span>
+                    <div>
+                        <h2 class="card-heading">AUTONOMOUS STRATEGY EVALUATION</h2>
+                        <span class="sub-heading">Phase 7: Monte Carlo Benchmark Across 100 Reproducible World Seeds</span>
+                    </div>
+                </div>
+                <div class="eval-controls" id="eval-controls">
+                    <span class="history-pill pill-benchmark-info" id="eval-benchmark-info">Loading Benchmark...</span>
+                    <button id="btn-refresh-eval" class="btn btn-secondary btn-sm" title="Reload Benchmark Results">
+                        <span class="btn-icon">🔄</span> Reload CSV
+                    </button>
+                </div>
+            </div>
+
+            <div class="strategy-eval-table-container">
+                <table class="strategy-eval-table" id="table-strategy-eval">
+                    <thead>
+                        <tr>
+                            <th scope="col">Strategy</th>
+                            <th scope="col">Success Rate</th>
+                            <th scope="col">Partial Missions</th>
+                            <th scope="col">Failure Rate</th>
+                            <th scope="col">Avg Coverage</th>
+                            <th scope="col">Avg Data Uploaded</th>
+                            <th scope="col">Avg Data Lost</th>
+                            <th scope="col">Avg Energy Used</th>
+                            <th scope="col">Avg Replans</th>
+                        </tr>
+                    </thead>
+                    <tbody id="strategy-eval-tbody">
+                        <!-- Populated by JavaScript from /api/experiments -->
+                    </tbody>
+                </table>
+                <div class="eval-empty-state" id="eval-empty-message" style="display: none;">
+                    <span class="empty-icon">📊</span>
+                    <p class="empty-text">No evaluation data available. Run <code>python experiments.py --seeds 100</code> to generate benchmark.</p>
+                </div>
+            </div>
+            <div class="eval-footer-note">
+                <p>
+                    ★ <strong>Evaluation Protocol:</strong> Evaluated across 100 identical procedural seeds with equal starting conditions (Base at (0,0), 300.0 initial energy, maximum 250 steps, identical dynamic obstacle distributions). Each strategy accesses only its own local sensor cone and belief map to guarantee strict partial knowledge isolation.
+                </p>
+            </div>
+        </section>
+
         <!-- Bottom Insights Row: Terrain Cost Learning & Event Decision Log -->
         <footer class="bottom-insights-grid" id="insights-panel">
             <!-- Terrain Cost Comparison Card -->

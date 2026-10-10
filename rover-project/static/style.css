@@ -1054,3 +1054,125 @@ body {
     font-size: 0.82rem;
     color: var(--text-muted);
 }
+
+/* =============================================================================
+   Phase 7: Autonomous Strategy Evaluation Section
+   ============================================================================= */
+
+.strategy-eval-section {
+    margin-top: var(--space-md);
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    box-shadow: var(--shadow-card);
+}
+
+.pill-benchmark-info {
+    background: rgba(139, 92, 246, 0.15);
+    color: #c4b5fd;
+    border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.strategy-eval-table-container {
+    overflow-x: auto;
+    margin-top: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-md);
+    background: rgba(10, 16, 26, 0.6);
+}
+
+.strategy-eval-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    text-align: left;
+}
+
+.strategy-eval-table th {
+    background: rgba(15, 23, 42, 0.85);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    white-space: nowrap;
+}
+
+.strategy-eval-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.strategy-eval-table tr:last-child td {
+    border-bottom: none;
+}
+
+.strategy-eval-table tr:hover td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.strat-row-highlight {
+    background: rgba(16, 185, 129, 0.06);
+}
+
+.strat-row-highlight td {
+    border-top: 1px solid rgba(16, 185, 129, 0.2);
+    border-bottom: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.strategy-title-cell {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.strat-icon {
+    font-size: 1.1rem;
+}
+
+.badge-tag-proposed {
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    font-weight: 700;
+}
+
+.metric-rate-bar-container {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.eval-footer-note {
+    margin-top: 12px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    padding: 4px 8px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    border-left: 2px solid var(--accent-purple);
+}
+
+.eval-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 30px 16px;
+    gap: 8px;
+    text-align: center;
+}
+

@@ -1,0 +1,4 @@
+seed,strategy,steps_completed,coverage_percent,known_cells,total_cells,energy_used,energy_remaining,data_collected_count,data_collected_value,data_uploaded_count,data_uploaded_value,data_lost_count,data_lost_value,replan_count,mission_outcome,returned_to_base,is_stranded
+1,random,10,2.31,37,1600,26.0,274.0,0,0,0,0,0,0,0,failure,False,False
+1,greedy_nearest,10,3.44,55,1600,28.0,272.0,0,0,0,0,0,0,0,failure,False,False
+1,utility_planner,10,3.0,48,1600,20.0,280.0,0,0,0,0,0,0,0,failure,False,False
