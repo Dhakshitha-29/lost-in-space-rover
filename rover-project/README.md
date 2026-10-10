@@ -1,344 +1,312 @@
 # Lost in Space: Rover Mission Control
 
-A simulation system in which an autonomous rover explores an **unknown** planet with **limited energy**, discovers valuable data sites, **uploads** data from communication zones, adapts to **changing terrain**, and **returns safely** to base.
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg)]()
+[![Architecture](https://img.shields.io/badge/architecture-Two--Map%20Segregation-purple.svg)]()
+
+An autonomous planetary rover simulation platform operating under **strict partial knowledge**, **finite energy budgets**, **online terrain friction learning**, **dynamic environmental hazards**, **scientific sample accounting**, and a **utility-driven planner with Dijkstra Point-of-No-Return guarantees**.
 
 ---
 
-## 1. Problem Summary
+## Table of Contents
 
-A rover lands at a base on an unfamiliar planet. It must:
-
-- Explore without a complete map
-- Spend a limited energy budget wisely
-- Find and collect valuable data
-- Upload that data from designated communication zones (data is only "safe" once uploaded)
-- Adapt when paths become blocked
-- Return to base before running out of energy
-- Produce measurable results about the mission
-
-**Core difficulty:** every decision (explore, collect, upload, return) uses the same energy pool, and early choices can make the mission impossible later.
-
----
-
-## 2. Our Understanding in Plain Language
-
-Think of a hiker in a foreign city with 40% phone battery and no map. They want to visit the best viewpoints, but can only post photos at a Wi-Fi café, and they must get back to the hotel before the battery dies.
-
-The rover constantly asks:
-
-1. How far is home from here? (Never pass the point of no return.)
-2. Is exploring this new area worth the energy?
-3. Should I upload my data now or collect more first?
-4. That path is blocked. What is my new route?
-
-Our system is the decision-making brain that answers these questions.
+1. [Problem Statement & Core Challenges](#1-problem-statement--core-challenges)
+2. [Architectural Principles & Two-Map Segregation](#2-architectural-principles--two-map-segregation)
+3. [Eight-Phase Implementation Overview](#3-eight-phase-implementation-overview)
+4. [Installation & Setup](#4-installation--setup)
+5. [Running the Application](#5-running-the-application)
+   - [Web Mission Control Dashboard](#web-mission-control-dashboard)
+   - [CLI Monte Carlo Experiments](#cli-monte-carlo-experiments)
+   - [Running the Test Suite](#running-the-test-suite)
+6. [Interactive Dashboard Walkthrough](#6-interactive-dashboard-walkthrough)
+7. [Strategy Benchmark & Result Interpretation](#7-strategy-benchmark--result-interpretation)
+8. [Project Structure](#8-project-structure)
+9. [Git Checkpoints Reference (Phases 1–8)](#9-git-checkpoints-reference-phases-18)
 
 ---
 
-## 3. Key Design Idea: Two Maps
+## 1. Problem Statement & Core Challenges
 
-The most important design decision is that **the rover never sees the real world directly**.
+An autonomous rover lands at a designated base coordinates $(x_0, y_0)$ on an unmapped extraterrestrial surface. The mission mandates maximizing scientific yield while ensuring guaranteed return before battery depletion.
 
-| | Ground Truth Map | Rover Belief Map |
+### Critical Constraints
+1. **Partial Observability**: The rover has no initial planetary map. It only senses within a local sensor radius ($r = 2$ cells). Unexplored cells are unknown.
+2. **Finite Energy Budget**: Every movement, scan, collection, and transmission consumes battery from a 300.0-unit power reservoir. Running out of power in the field strands the rover (mission failure).
+3. **Data Security & Communication Relays**: Scientific data acquired at data sites remains **unsecured in the volatile onboard buffer**. If the rover is stranded, all unuploaded data is permanently lost. Data is only secured when transmitted at a designated **Communication Zone**.
+4. **Unknown Terrain Costs**: Movement friction varies across terrain types (`Flat` = 1.0, `Rough` = 2.0, `Mountain/Hill` = 4.0, `Rock` = $\infty$). The rover begins with optimistic heuristic estimates and must learn true terrain friction online through experience.
+5. **Dynamic Obstacles**: Seeded environmental rockslides can seal previously open corridors. The rover discovers obstructions only when they enter sensor range, necessitating instant belief invalidation and route replanning.
+6. **Point-of-No-Return Guarantee**: The rover must continuously monitor the minimum energy required to traverse from its current location back to the base:
+   $$\text{Return Budget} = C_{\text{Dijkstra}}(\text{Current} \to \text{Base}) + \text{Safety Buffer}$$
+   If remaining energy reaches this threshold, the rover terminates exploration and initiates an emergency return.
+
+---
+
+## 2. Architectural Principles & Two-Map Segregation
+
+The system enforces strict segregation between simulation physics and rover cognition:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                   SIMULATION GROUND TRUTH (Physics)                    │
+│   • Complete 40x40 procedural terrain grid & true movement friction    │
+│   • Active dynamic rockslides & environmental event scheduler          │
+│   • Real planetary data site values & communication zones              │
+└───────────────────────────────────▲────────────────────────────────────┘
+                                    │ Sense Cone (radius=2)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      ROVER BELIEF MAP (Cognition)                      │
+│   • Discovered terrain cells only (unknown cells strictly masked)      │
+│   • Discovered data sites & communication zone catalog                 │
+│   • Learned terrain friction weights (Online EMA / Running Average)    │
+│   • Unmapped frontier tracking for exploration expansion               │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     DECISION & PLANNING SUBSYSTEM                      │
+│   • A* Pathfinding (Conservative unknown terrain traversal)            │
+│   • Dijkstra Reverse Return Field (Point-of-No-Return monitoring)      │
+│   • Multi-Objective Utility Engine (Exploration vs Harvest vs Upload)  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Eight-Phase Implementation Overview
+
+| Phase | Milestone | Core Components |
 |---|---|---|
-| Owned by | The simulator | The rover |
-| Contains | All terrain, costs, obstacles, hidden data sites | Only what the rover has sensed so far |
-| Initial state | Fully generated | Almost empty (only the base) |
-| Changes | Obstacles appear over time | Updated when the rover senses something |
-
-The rover moves, senses nearby cells, and copies what it sees from the Ground Truth into its Belief Map. All planning happens only on the Belief Map.
-
----
-
-## 4. System Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│                      SIMULATOR                         │
-│  Ground Truth Map   ·   Dynamic Event Generator        │
-└──────────────┬─────────────────────────▲───────────────┘
-               │ sensor data             │ move / collect / upload
-               ▼                         │
-┌────────────────────────────────────────┴───────────────┐
-│                        ROVER                           │
-│  Belief Map · Energy · Data Buffer · Position          │
-│                        │                               │
-│                        ▼                               │
-│                    PLANNER                             │
-│  Goal Scoring · Pathfinding · Safety Check             │
-└────────────────────────────────────────────────────────┘
-               │
-               ▼
-        Metrics + Visualization
-```
+| **Phase 1** | Procedural Environment Generation | `world.py`, Perlin/noise generation, BFS connectivity checks, base/comm/data site seeding. |
+| **Phase 2** | Rover Mechanics & Belief Mapping | `rover.py`, energy drain, sensor cone, `BeliefMap`, visibility state tracking, frontier extraction. |
+| **Phase 3** | Pathfinding & Energy-Aware Return | `planner.py`, A* with unknown terrain heuristics, Dijkstra cost-to-home field, EMA terrain friction learning. |
+| **Phase 4** | Multi-Objective Utility Planning | Utility scoring formula ($U_{\text{explore}}$, $U_{\text{data}}$, $U_{\text{upload}}$), onboard buffer accounting, loss prevention. |
+| **Phase 5** | Dynamic Environmental Obstacles | `events.py`, rockslides, dynamic obstacle injection, sensor detection, cache invalidation, replanning. |
+| **Phase 6** | Full-Stack Web Mission Control | `app.py`, `templates/index.html`, `static/app.js`, `static/style.css`, side-by-side HTML5 canvas, live controls. |
+| **Phase 7** | Automated Strategy Benchmarking | `experiments.py`, `rover_sim/experiments.py`, 100-seed Monte Carlo evaluation comparing Random, Greedy, and Utility. |
+| **Phase 8** | Integration, Verification & Polish | Complete test suite (111 tests), packaging, documentation, reproducibility verification. |
 
 ---
 
-## 5. Environment Generation
+## 4. Installation & Setup
 
-The world is a 2D grid (default 40×40). Each cell has a type and an energy cost.
+### Prerequisites
+- **Python 3.10+** (Tested on Python 3.10, 3.11, 3.12, 3.13, 3.14)
+- Git
 
-| Cell type | Meaning | Energy cost |
+### Installation Steps
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Dhakshitha-29/lost-in-space-rover.git
+   cd lost-in-space-rover/rover-project
+   ```
+
+2. **Create and activate a virtual environment (recommended):**
+   ```bash
+   # Windows PowerShell / CMD
+   python -m venv venv
+   .\venv\Scripts\activate
+
+   # Linux / macOS
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+---
+
+## 5. Running the Application
+
+### Web Mission Control Dashboard
+Launch the interactive web mission control server:
+```bash
+python app.py
+```
+Open your browser and navigate to:
+```
+http://127.0.0.1:5000/
+```
+
+### CLI Monte Carlo Experiments
+Run automated benchmark experiments across reproducible world seeds:
+```bash
+# Run 100-seed benchmark across all 3 strategies (default, parallel multiprocessing)
+python experiments.py --seeds 100
+
+# Quick 5-seed benchmark with custom CSV output
+python experiments.py --seeds 5 --csv quick_eval.csv
+
+# Run sequentially without multiprocessing
+python experiments.py --seeds 10 --sequential
+```
+
+### Running the Test Suite
+Execute the comprehensive test suite (111 tests covering all phases):
+```bash
+python -m pytest -v
+```
+
+---
+
+## 6. Interactive Dashboard Walkthrough
+
+The web interface (`app.py`) provides a mission control center built with vanilla JavaScript, modern CSS glassmorphism, and responsive HTML5 canvas rendering:
+
+```
++---------------------------------------------------------------------------------------------------+
+|  LOST IN SPACE // ROVER MISSION CONTROL                    [MISSION STATUS: IN PROGRESS] [SEED 42]|
++---------------------------------------------------------------------------------------------------+
+|  [▶ START]  [⏸ PAUSE]  [⏵ RESUME]  [⏭ STEP]  [↺ RESET]  |  STEP: 42   COVERAGE: 28.5%   REPLANS: 3 |
++---------------------------------------------------------------------------------------------------+
+|  POWER: 214.2 / 300.0  |  POSITION: (12, 8)        |  SCIENCE: 140 Value   |  GOAL: UPLOAD (COMM) |
+|  [██████████░░░] 71.4% |  RETURN COST: 38.0  BUF: 36|  Coll: 3 · Upl: 2    |  Utility: 2.82       |
++---------------------------------------------------------------------------------------------------+
+|         GROUND TRUTH MAP (Simulated Reality)       |          ROVER BELIEF MAP (Cognition)        |
+|  [ Full terrain, active rockslides, all sites ]    |  [ Only sensed terrain, frontiers, path ]    |
++---------------------------------------------------------------------------------------------------+
+|  SCIENTIFIC DATA COLLECTION & UPLOAD HISTORY TABLE                                                |
+|  ID      Coordinates   Value   Collected Step   Status      Upload Comm Zone   Upload Step Status |
+|  DS-1    (14, 5)       85      Step 18          Collected   COMM-1 (8, 4)      Step 29     Uploaded|
++---------------------------------------------------------------------------------------------------+
+|  TERRAIN ENERGY COSTS (Learned vs Truth)           |  MISSION LOG & DECISION STREAM               |
+|  Flat: 1.0 (100%) | Rough: 2.0 (100%) | Mtn: 4.0   |  [STEP 29] [SUCCESS] Transmitted data DS-1   |
++---------------------------------------------------------------------------------------------------+
+|  AUTONOMOUS STRATEGY EVALUATION (Monte Carlo Benchmark Across 100 Reproducible Seeds)             |
+|  Random Exploration vs Greedy-Nearest vs Utility Planner (Proposed)                               |
++---------------------------------------------------------------------------------------------------+
+```
+
+### Dashboard Features
+1. **Side-by-Side Dual Canvas**: Inspect Ground Truth (simulator physics) alongside Rover Belief Map (strictly masked local perception).
+2. **Interactive Controls**:
+   - `START`: Launches the autonomous mission stepping loop.
+   - `PAUSE` / `RESUME`: Halts or continues execution in real time.
+   - `STEP`: Executes a single simulation step.
+   - `RESET`: Reinitializes the world with custom seeds and togglable dynamic obstacle hazards.
+   - `STEP SPEED`: Adjust simulation tick duration (50ms, 150ms, 250ms, 500ms, 1000ms).
+3. **Point-of-No-Return Telemetry**: Live readout of Dijkstra return cost, safety buffer, and energy margin.
+4. **Scientific Data Ledger**: Complete tabular accounting of all sample discoveries, collection coordinates, values, and upload verification status.
+5. **Dynamic Event Stream**: Real-time terminal log detailing sensed rockslides, path invalidations, and emergency replanning.
+
+---
+
+## 7. Strategy Benchmark & Result Interpretation
+
+### Benchmark Setup
+To evaluate exploration performance objectively, Phase 7 executes a Monte Carlo experiment across **100 identical procedural world seeds** (300 total simulation runs). Each strategy operates from the base $(0,0)$ with 300.0 initial energy, identical dynamic obstacle distributions, and a 250-step limit:
+
+| Strategy | Exploration Logic | Return Decision Logic |
 |---|---|---|
-| Flat | Easy terrain | 1 |
-| Rough / sand | Slow terrain | 3 |
-| Hill | Steep terrain | 5 |
-| Rock / crater | Impassable | ∞ |
-| Base | Start and end point | 1 |
-| Data site | Contains valuable data | varies |
-| Communication zone | Upload point | 1 |
+| **Random Exploration** | Randomly walks among passable neighbors within belief cone | Naive fixed energy threshold ($E \le 40.0$) |
+| **Greedy-Nearest** | Greedily heads to closest known data site, comm zone, or frontier | Naive fixed energy threshold ($E \le 35.0$) |
+| **Proposed Utility Planner** | Multi-objective utility scoring ($U_{\text{explore}}$, $U_{\text{data}}$, $U_{\text{upload}}$) | Dijkstra Point-of-No-Return return margin |
 
-**Generation steps**
+### Empirical Results (100 Seeds, 300 Runs)
 
-1. Generate natural-looking terrain using Perlin noise (or random plus smoothing) so hills and rough patches form clusters.
-2. Place the base, usually near an edge or the centre.
-3. Place 2 to 3 communication zones.
-4. Place 5 to 10 data sites with different values.
-5. Deliberately place the highest-value site in a hard-to-reach spot (behind rough terrain, far from any comm zone). This matches the challenge that the most valuable location may not be the easiest to reach.
-6. Run a BFS from the base to verify that all important locations are reachable. Regenerate if not.
-7. Use a random seed so every run can be reproduced exactly.
+```
+=== MONTE CARLO STRATEGY EVALUATION (100 SEEDS, 300 RUNS) ===
++-------------------------------+------------+--------------+---------------+--------------+--------------+--------------+-------------+
+| Strategy                      | Success %  | Partial %    | Failure %     | Avg Coverage | Avg Uploaded | Avg Lost Val | Avg Energy  |
++-------------------------------+------------+--------------+---------------+--------------+--------------+--------------+-------------+
+| Random Exploration            | 0.0%       | 95.0%        | 5.0%          | 7.1%         | 0.0          | 0.0          | 261.8       |
+| Greedy-Nearest                | 0.0%       | 0.0%         | 100.0%        | 16.0%        | 18.9         | 0.0          | 195.1       |
+| Utility Planner (Proposed)    | 45.0%      | 54.0%        | 1.0%          | 25.2%        | 59.4         | 0.0          | 237.6       |
++-------------------------------+------------+--------------+---------------+--------------+--------------+--------------+-------------+
+```
+
+### Analysis & Interpretation
+
+1. **Safety and Return Guarantees**:
+   - **Greedy-Nearest fails 100.0% of the time**. Because greedy heuristics only consider target proximity and use a naive energy threshold ($E \le 35.0$), the rover ventures deep into mountain or rough terrain where the return journey costs far more than 35.0 energy, causing the rover to run out of battery and become stranded.
+   - **Utility Planner achieves 99.0% safe mission survival** (45.0% successful returns to base + 54.0% partial completed missions where the rover reached max steps without stranding). Its Dijkstra return margin continuously accounts for actual return costs and terrain friction, triggering return home before reaching the point of no return.
+2. **Scientific Yield**:
+   - The Utility Planner delivers an average of **59.4 uploaded value**, more than **3.1× higher** than Greedy-Nearest (18.9) and infinitely higher than Random (0.0).
+   - Because collected data is only secured upon upload, the utility function's upload urgency term ($U_{\text{upload}} \propto \text{buffered\_value} \times \frac{1}{\text{energy\_margin}}$) ensures scientific yield is locked in before risks escalate.
+3. **Exploration Efficiency**:
+   - The Utility Planner achieves **25.2% average coverage**, outperforming Greedy-Nearest (16.0%) and Random (7.1%), as its frontier utility term drives systematic information discovery.
 
 ---
 
-## 6. The Rover
-
-### State
-
-- Position
-- Energy remaining
-- Belief Map (Unknown, Free with known cost, Blocked, Data site, Comm zone)
-- Data buffer (collected but not yet uploaded)
-- Frontier (known cells adjacent to unknown cells, which are the candidates for exploration)
-
-### Sensing
-
-Each step the rover reveals all cells within its sensor radius (for example 3 cells) and writes them into the Belief Map. If an obstacle has appeared in a previously known cell, the rover notices it here.
-
-### Actions
-
-| Action | Effect |
-|---|---|
-| Move | Spend the energy cost of the destination cell |
-| Scan | Reveal nearby cells (optional small energy cost) |
-| Collect | Move data from a site into the buffer |
-| Upload | At a comm zone, bank buffered data as secured |
-| Return | Travel to base and end the mission |
-
----
-
-## 7. Algorithms
-
-### 7.1 Pathfinding: A* (A-star)
-
-A* finds the lowest-energy route by always expanding the most promising option first, using an estimate of the remaining distance.
-
-- Runs only on the Belief Map
-- Cost is energy, not step count
-- Unknown cells are treated as blocked for safe paths, or given an optimistic cost when planning exploration
-
-### 7.2 Safety Rule: Point of No Return
-
-Before every move, the rover checks:
+## 8. Project Structure
 
 ```
-energy_remaining >= move_cost + cost_home_from_new_position + safety_margin
-```
-
-- Run Dijkstra once from the base outward over the Belief Map, giving the cheapest cost home from every known cell. Each check is then a lookup.
-- Use a safety margin of about 10 to 15% to absorb surprises such as a newly blocked path.
-- If the check fails, the rover must head home.
-
-### 7.3 Goal Selection (Utility-Based Planner)
-
-At each decision point the rover scores its options and picks the best:
-
-```
-score(goal) = expected_reward / energy_cost
-```
-
-| Goal | Reward idea |
-|---|---|
-| Explore a frontier | Expected information gain (unknown cells revealed), weighted higher near promising areas |
-| Collect from a site | Data value, counted as secured only after upload |
-| Upload at a comm zone | Rises as the buffer holds more unsecured data (growing risk of loss) |
-| Return to base | Overrides everything when the safety margin is hit |
-
-### 7.4 Data and Communication Logic
-
-- Collected data sits in the buffer and does not count as success.
-- Data counts only after upload at a comm zone.
-- If the rover runs out of energy carrying data, that data is lost.
-- After each collection, the rover checks that an upload is reachable while still keeping a safe return. If not, it should reconsider collecting.
-
-### 7.5 Dynamic Obstacles and Replanning
-
-Every N steps (or at random times) the simulator blocks cells in the Ground Truth, such as rockslides or sandstorms. The rover only learns about this when it senses the change. Then it:
-
-1. Updates the Belief Map
-2. Checks whether the current path is still valid
-3. Replans the route to its current goal
-4. Recomputes the cost home (and aborts the goal if home is now at risk)
-
-**Baseline:** A* with full replanning.
-**Upgrade path:** D* Lite, an algorithm built for robots in changing environments that repairs the existing path instead of recomputing everything.
-
----
-
-## 8. Main Simulation Loop
-
-```
-initialise world (seeded)
-initialise rover at base with full energy
-
-while mission not over:
-    rover.sense(world)                  # update Belief Map
-    world.maybe_add_obstacles()         # dynamic events
-    update cost-home table              # Dijkstra from base
-    goal = planner.choose_goal(rover)   # explore / collect / upload / return
-    path = planner.find_path(rover, goal)
-
-    if safe_to_move(path):
-        rover.move_along(path)
-    else:
-        rover.return_to_base()
-
-    metrics.record(step)
-
-end mission -> evaluate outcome -> report
-```
-
-**Mission ends when** the rover reaches base, or runs out of energy (failure).
-
----
-
-## 9. Metrics and Evaluation
-
-For each run we log:
-
-- Data collected, uploaded, and lost
-- Energy used, wasted, and remaining
-- Percentage of the map explored
-- Number of replans caused by obstacles
-- Number of exploration, collection, and upload actions
-- Mission outcome: **Success** (returned with data uploaded), **Partial** (returned with some data lost), **Failure** (stranded)
-
-**Comparison against baselines (same seed):**
-
-| Strategy | Description |
-|---|---|
-| Random explorer | Moves randomly, returns when energy is low |
-| Greedy nearest | Always goes to the closest known target |
-| **Our planner** | Utility-based with safety rule and replanning |
-
-**Robustness testing:** run 100 random maps and report the average success rate and data uploaded for each strategy.
-
----
-
-## 10. Planned Project Structure
-
-```
-rover_sim/
-├── config.py          # grid size, energy, sensor radius, seeds, margins
-├── world.py           # Ground Truth generation and dynamic events
-├── rover.py           # state, Belief Map, sensing, buffer
-├── planner.py         # A*, Dijkstra, goal scoring, safety check
-├── events.py          # obstacle generator
-├── simulator.py       # main loop
-├── metrics.py         # logging and statistics
-├── visualizer.py      # side-by-side Ground Truth and Belief Map display
-├── experiments.py     # baseline comparisons and Monte Carlo runs
-└── README.md
+lost-in-space-rover/rover-project/
+├── .gitignore                      # Git ignore patterns for caches, virtual environments, and logs
+├── README.md                       # Comprehensive system documentation
+├── requirements.txt                # Python project dependencies (Flask, pytest, etc.)
+├── app.py                          # Flask application server and REST API endpoints
+├── config.py                       # Root-level configuration entry point
+├── events.py                       # Root-level events entry point
+├── experiments.py                  # Root CLI for automated strategy evaluation
+├── metrics.py                      # Root-level metrics entry point
+├── planner.py                      # Root-level planner entry point
+├── rover.py                        # Root-level rover entry point
+├── visualizer.py                   # Root-level visualizer entry point
+├── world.py                        # Root-level world entry point
+├── inspect_map.py                  # ASCII and PNG map generation diagnostic utility
+├── experiment_results.csv          # Telemetry dataset from 100-seed / 300-run Monte Carlo benchmark
+├── rover_sim/                      # Core simulation engine package
+│   ├── __init__.py                 # Package exports for all simulation modules
+│   ├── config.py                   # Terrain definitions, cost schemas, and simulation configs
+│   ├── events.py                   # Dynamic environmental events, rockslides, and event manager
+│   ├── experiments.py              # Strategy benchmarking framework and runner
+│   ├── metrics.py                  # Telemetry tracking, step snapshots, and outcome classification
+│   ├── planner.py                  # A* pathfinding, Dijkstra return fields, utility goal selector
+│   ├── rover.py                    # Rover physics, BeliefMap, sensor cone, data ledger
+│   ├── session.py                  # Thread-safe simulation session manager for web UI
+│   ├── visualizer.py               # Canvas data serializers for Ground Truth and Belief maps
+│   └── world.py                    # Procedural terrain generation, Perlin noise, BFS reachability
+├── static/                         # Web dashboard static assets
+│   ├── app.js                      # Vanilla JavaScript frontend controller and canvas renderer
+│   └── style.css                   # Responsive dark-theme styling and glassmorphism layout
+├── templates/                      # Web dashboard templates
+│   └── index.html                  # Mission Control web dashboard UI
+└── tests/                          # Automated test suite (111 tests)
+    ├── __init__.py
+    ├── test_config.py              # Configuration and schema validation tests
+    ├── test_world.py               # World generation, connectivity, and seeding tests
+    ├── test_rover.py               # Rover mechanics, belief mapping, and sensing tests
+    ├── test_planner.py             # A* pathfinding, Dijkstra return, and terrain learning tests
+    ├── test_mission_decisions.py   # Utility planner, data collection, and upload tests
+    ├── test_dynamic_events.py      # Rockslides, obstacle detection, and replanning tests
+    ├── test_dashboard.py           # Flask endpoints, session control, and telemetry tests
+    └── test_experiments.py         # Strategy evaluation, reproducibility, and CSV export tests
 ```
 
 ---
 
-## 11. Project Flow (Development Roadmap)
+## 9. Git Checkpoints Reference (Phases 1–8)
 
-### Phase 1: Foundation (world and data structures)
-- Define the grid, cell types, and costs
-- Build the world generator with seeds and a connectivity check
-- Place base, data sites, and comm zones
-- **Deliverable:** printable and visual Ground Truth map
+The project was developed incrementally across eight checkpoints:
 
-### Phase 2: Rover Basics
-- Implement the rover state, energy, and movement
-- Build the Belief Map and sensor radius
-- Track the frontier
-- **Deliverable:** rover that walks and reveals the map as it moves
+```bash
+# Checkpoint 1: Procedural environment & connectivity
+git commit -m "feat: generate procedural maps and connectivity"
 
-### Phase 3: Pathfinding and Safety
-- Implement A* over the Belief Map
-- Implement Dijkstra from base for cost-home lookups
-- Add the point-of-no-return safety check
-- **Deliverable:** rover that explores and always gets home
+# Checkpoint 2: Rover movement, sensing, and belief map
+git commit -m "feat: implement rover movement, sensing, and belief map"
 
-### Phase 4: Decision Making
-- Implement goal scoring (explore, collect, upload, return)
-- Add the data buffer and upload logic
-- Tune the reward formulas
-- **Deliverable:** rover that completes a full mission on a static map
+# Checkpoint 3: Pathfinding and energy-aware safe return
+git commit -m "feat: add pathfinding and energy-aware safe return"
 
-### Phase 5: Dynamic Environment
-- Add the obstacle event generator
-- Detect blocked paths through sensing
-- Implement replanning and abort-to-home logic
-- **Deliverable:** rover that survives changing conditions
+# Checkpoint 4: Utility-based planning and data uploads
+git commit -m "feat: add utility planning and data uploads"
 
-### Phase 6: Metrics and Visualization
-- Build the metrics logger and mission outcome classification
-- Create the side-by-side live display (Ground Truth, Belief Map, energy bar, path trail)
-- Show the reason for each decision ("returning because margin hit 12%")
-- **Deliverable:** clear demo-ready display and report
+# Checkpoint 5: Dynamic obstacles and online replanning
+git commit -m "feat: handle dynamic obstacles and replanning"
 
-### Phase 7: Evaluation and Polish
-- Implement the baseline strategies
-- Run comparisons and Monte Carlo experiments
-- Build scenarios: easy map, hard map, and a trap map (valuable but dangerous site)
-- Write the results table and finalize the README
-- **Deliverable:** evidence that our planner outperforms the baselines
+# Checkpoint 6: Interactive web dashboard and simulation metrics
+git commit -m "feat: add rover dashboard and mission metrics"
 
-### Phase 8: Stretch Goals (if time permits)
-- D* Lite for efficient replanning
-- Risk-aware path costs for uncertain areas
-- Limited-bandwidth uploads
-- Multiple rovers or a day/night energy cycle
+# Checkpoint 7: Automated strategy evaluation across seeded maps
+git commit -m "feat: evaluate rover strategies across seeded maps"
 
----
-
-## 12. What Makes This Solution Stand Out
-
-1. **True partial knowledge:** separate Ground Truth and Belief Map, so the rover genuinely does not know the world.
-2. **Safety guarantee:** the point-of-no-return rule protects the mission from early bad decisions.
-3. **Data security model:** data counts only after upload, which creates real trade-offs.
-4. **Explainable decisions:** every action has a logged reason.
-5. **Evidence-based:** baseline comparisons and many-map testing show the planner works.
-6. **Honest about limits:** the full problem is a variant of the orienteering problem, which is NP-hard. Our planner is a strong heuristic, not a proven optimum.
-
----
-
-## 13. Expected Questions and Answers
-
-| Question | Answer |
-|---|---|
-| What if the only known path home gets blocked? | The rover replans using its Belief Map, and if no path is known it explores the nearest frontier toward the base within its remaining margin. The safety margin exists for this case. |
-| Why A* instead of reinforcement learning? | A* is explainable, needs no training, and gives reliable guarantees on known terrain. RL could be a future extension for the goal-selection layer. |
-| How does it decide when to stop exploring? | When the score of exploring drops below the score of collecting, uploading, or returning, or when the safety margin is hit. |
-| Is it optimal? | No. It is a well-reasoned heuristic, and we measure it against baselines. |
-
----
-
-## 14. Related Concepts to Read More About
-
-- Orienteering problem (maximize reward under a travel budget)
-- Frontier-based exploration and SLAM (real robotics)
-- D* Lite (replanning in changing environments)
-- POMDPs (decision making under partial knowledge)
-- Perlin noise (natural-looking terrain generation)
-
----
-
-## 15. Team and Tech
-
-- **Language:** Python
-- **Libraries (planned):** NumPy, Matplotlib or Pygame, `heapq` for priority queues, optionally `noise` for Perlin terrain
-- **Run:** `python simulator.py --seed 42`
+# Checkpoint 8: Final integration, packaging, and comprehensive documentation
+git commit -m "feat: finalize rover mission control"
+```

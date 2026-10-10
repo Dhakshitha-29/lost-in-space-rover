@@ -1,7 +1,41 @@
+# Python Bytecode and Cache
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+
+# Testing and Coverage
 .pytest_cache/
 .coverage
 htmlcov/
+.coverage.*
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Distribution and Builds
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE and Editor Configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and Scratch
 *.log
+scratch/
+scratch_test.py
+*.zip

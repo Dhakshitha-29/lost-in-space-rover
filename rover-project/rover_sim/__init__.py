@@ -47,6 +47,15 @@ from rover_sim.world import (
     World,
     WorldGenerator,
 )
+from rover_sim.experiments import (
+    BaseStrategy,
+    ExperimentResult,
+    ExperimentRunner,
+    GreedyNearestStrategy,
+    RandomStrategy,
+    StrategyType,
+    UtilityPlannerStrategy,
+)
 
 __all__ = [
     "SimulationConfig",
@@ -81,4 +90,11 @@ __all__ = [
     "StepSnapshot",
     "MapVisualizer",
     "SimulationSession",
+    "BaseStrategy",
+    "RandomStrategy",
+    "GreedyNearestStrategy",
+    "UtilityPlannerStrategy",
+    "ExperimentResult",
+    "ExperimentRunner",
+    "StrategyType",
 ]

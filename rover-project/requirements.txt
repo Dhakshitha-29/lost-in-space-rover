@@ -1,0 +1,15 @@
+# Lost in Space: Rover Mission Control Dependencies
+# Python >= 3.10 required
+
+# Core Web Framework and Dashboard
+Flask>=3.0.0
+Werkzeug>=3.0.0
+Jinja2>=3.1.0
+
+# Testing Framework
+pytest>=8.0.0
+
+# Optional Scientific & Inspection Utilities
+numpy>=1.24.0
+matplotlib>=3.8.0
+pillow>=10.0.0
