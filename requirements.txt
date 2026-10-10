@@ -1,7 +1,0 @@
-streamlit
-numpy
-pygame
-matplotlib
-pandas
-Pillow
-pytest
